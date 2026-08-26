@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#f5f7fa">
+    <meta name="description" content="面向 AI 学习与科研的个人工作台">
+    <title>Research Desk · AI 学习工作台</title>
+    <link rel="stylesheet" href="/styles.css">
+    <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js" defer></script>
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">跳到主要内容</a>
+
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="主导航">
+        <a class="brand" href="#overview" data-route-link="overview" aria-label="Research Desk 首页">
+          <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span>
+          <span class="brand-type">RESEARCH<br>DESK</span>
+        </a>
+
+        <nav class="side-nav">
+          <button class="nav-item is-active" type="button" data-route="overview">
+            <i data-lucide="layout-dashboard"></i><span>概览</span>
+          </button>
+          <button class="nav-item" type="button" data-route="links">
+            <i data-lucide="panels-top-left"></i><span>快捷入口</span>
+          </button>
+          <button class="nav-item" type="button" data-route="directory">
+            <i data-lucide="compass"></i><span>网址导航</span>
+            <span class="nav-count" id="directory-nav-count">0</span>
+          </button>
+          <button class="nav-item" type="button" data-route="tasks">
+            <i data-lucide="list-checks"></i><span>任务</span>
+            <span class="nav-count" id="task-nav-count">0</span>
+          </button>
+          <button class="nav-item" type="button" data-route="calendar">
+            <i data-lucide="calendar-days"></i><span>日历</span>
+          </button>
+          <button class="nav-item" type="button" data-route="papers">
+            <i data-lucide="library"></i><span>论文</span>
+          </button>
+          <button class="nav-item" type="button" data-route="focus">
+            <i data-lucide="timer-reset"></i><span>专注</span>
+          </button>
+        </nav>
+
+        <div class="sidebar-foot">
+          <a class="profile-chip" id="profile-link" href="https://github.com/lyh843" target="_blank" rel="noreferrer">
+            <img src="https://github.com/lyh843.png?size=96" alt="LYH 的 GitHub 头像">
+            <span><strong id="sidebar-name">LYH</strong><small id="sidebar-role">AI learner</small></span>
+            <i data-lucide="arrow-up-right"></i>
+          </a>
+          <button class="sidebar-action auth-only" id="settings-button" type="button">
+            <i data-lucide="settings-2"></i><span>工作台设置</span>
+          </button>
+        </div>
+      </aside>
+
+      <div class="workspace">
+        <header class="topbar">
+          <button class="mobile-brand" type="button" data-route="overview" aria-label="返回概览">
+            <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span>
+            <span class="mobile-title"><strong>RD /</strong><small id="mobile-route-title">概览</small></span>
+          </button>
+
+          <button class="command-trigger" id="command-trigger" type="button">
+            <i data-lucide="search"></i>
+            <span>搜索网站、任务、论文或快捷入口</span>
+            <kbd>⌘ K</kbd>
+          </button>
+
+          <div class="topbar-actions">
+            <span class="save-state" id="save-state"><span></span>服务器已连接</span>
+            <button class="icon-button auth-only" id="export-button" type="button" data-tooltip="导出数据" aria-label="导出数据">
+              <i data-lucide="download"></i>
+            </button>
+            <button class="login-button" id="login-button" type="button">
+              <i data-lucide="lock-keyhole"></i><span>进入编辑</span>
+            </button>
+          </div>
+        </header>
+
+        <main id="main-content">
+          <section class="view is-active" data-view="overview" aria-labelledby="overview-title">
+            <div class="overview-head">
+              <div>
+                <p class="eyebrow" id="today-label">TUE · AUG 25</p>
+                <h1 id="overview-title"><span id="greeting">晚上好</span>，<span id="display-name">LYH</span><br>今天推进什么？</h1>
+              </div>
+              <div class="now-block" aria-label="当前时间">
+                <strong id="clock">20:48</strong>
+                <span>ASIA/SHANGHAI · GMT+8</span>
+              </div>
+            </div>
+
+            <div class="pulse-panel" aria-label="本周研究节奏">
+              <div class="pulse-label">
+                <span class="section-code">WEEKLY PULSE</span>
+                <strong>本周研究节奏</strong>
+              </div>
+              <div class="pulse-track">
+                <div class="pulse-line" aria-hidden="true">
+                  <span class="pulse-fill" id="pulse-fill"></span>
+                  <span class="pulse-node" style="--node: 0%"></span>
+                  <span class="pulse-node" style="--node: 24%"></span>
+                  <span class="pulse-node" style="--node: 51%"></span>
+                  <span class="pulse-node" style="--node: 76%"></span>
+                  <span class="pulse-node" style="--node: 100%"></span>
+                </div>
+                <div class="pulse-days" aria-hidden="true"><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span></div>
+              </div>
+              <div class="pulse-value">
+                <strong><span id="weekly-focus">0</span><small> min</small></strong>
+                <span>目标 <span id="weekly-target">600</span></span>
+              </div>
+            </div>
+
+            <div class="metric-strip" aria-label="工作台概览数据">
+              <div class="metric"><span>待推进</span><strong id="open-task-count">0</strong><small>项任务</small></div>
+              <div class="metric"><span>正在精读</span><strong id="reading-count">0</strong><small>篇论文</small></div>
+              <div class="metric"><span>今日焦点</span><strong id="today-priority">—</strong><small id="today-priority-label">尚未安排</small></div>
+              <button class="metric metric-action" type="button" data-route="focus">
+                <span>开启番茄钟</span><strong id="overview-focus-duration">25:00</strong><small><i data-lucide="play"></i> 进入专注</small>
+              </button>
+            </div>
+
+            <section class="overview-calendar-section" aria-labelledby="overview-calendar-heading">
+              <div class="section-heading compact">
+                <div><span class="section-code">NEXT ON CALENDAR</span><h2 id="overview-calendar-heading">接下来日程</h2></div>
+                <button class="text-button" type="button" data-route="calendar">打开日历 <i data-lucide="arrow-right"></i></button>
+              </div>
+              <div class="overview-calendar-list" id="overview-calendar-list"></div>
+            </section>
+
+            <div class="overview-grid">
+              <section class="work-section priorities-section" aria-labelledby="priority-heading">
+                <div class="section-heading">
+                  <div><span class="section-code">NOW</span><h2 id="priority-heading">当前优先事项</h2></div>
+                  <button class="text-button" type="button" data-route="tasks">查看全部 <i data-lucide="arrow-right"></i></button>
+                </div>
+                <div class="priority-list" id="overview-tasks"></div>
+              </section>
+
+              <section class="work-section reading-section" aria-labelledby="reading-heading">
+                <div class="section-heading">
+                  <div><span class="section-code">READING QUEUE</span><h2 id="reading-heading">论文阅读队列</h2></div>
+                  <button class="text-button" type="button" data-route="papers">论文库 <i data-lucide="arrow-right"></i></button>
+                </div>
+                <div class="reading-list" id="overview-papers"></div>
+              </section>
+            </div>
+
+            <section class="quick-strip" aria-labelledby="quick-heading">
+              <div class="section-heading compact">
+                <div><span class="section-code">SHORTCUTS</span><h2 id="quick-heading">常用入口</h2></div>
+                <button class="icon-button auth-only" type="button" data-action="add" data-kind="links" data-tooltip="新增快捷入口" aria-label="新增快捷入口"><i data-lucide="plus"></i></button>
+              </div>
+              <div class="quick-row" id="overview-links"></div>
+            </section>
+          </section>
+
+          <section class="view" data-view="links" aria-labelledby="links-title">
+            <div class="page-heading">
+              <div><span class="section-code">RESOURCE MAP</span><h1 id="links-title">快捷入口</h1><p>把每天需要打开的工具放在触手可及的位置。</p></div>
+              <button class="primary-button auth-gated" type="button" data-action="add" data-kind="links"><i data-lucide="plus"></i> 新增入口</button>
+            </div>
+            <div class="filter-bar">
+              <div class="segmented-control" id="link-filters" aria-label="快捷入口分类"></div>
+              <label class="inline-search"><i data-lucide="search"></i><input id="link-search" type="search" placeholder="筛选入口" aria-label="筛选快捷入口"></label>
+            </div>
+            <div class="links-grid" id="links-grid"></div>
+          </section>
+
+          <section class="view directory-view" data-view="directory" aria-labelledby="directory-title">
+            <div class="page-heading directory-heading">
+              <div><span class="section-code">LEGACY LINK ATLAS</span><h1 id="directory-title">网址导航</h1><p>旧站入口已经完整归档，也可以继续在线维护。</p></div>
+              <div class="directory-heading-actions"><span><strong id="directory-count">0</strong> 个站点</span><button class="primary-button auth-gated" type="button" data-action="add" data-kind="directoryLinks"><i data-lucide="plus"></i> 添加站点</button></div>
+            </div>
+
+            <form class="jump-console" id="web-search-form" target="_blank" role="search" aria-label="搜索互联网">
+              <span class="jump-console-code">SEARCH / WEB</span>
+              <label class="engine-select"><span class="sr-only">搜索引擎</span><select id="search-engine" aria-label="选择搜索引擎"><option value="bing">Bing</option><option value="google">Google</option><option value="baidu">百度</option><option value="duckduckgo">DuckDuckGo</option></select><i data-lucide="chevron-down"></i></label>
+              <label class="jump-input"><i data-lucide="search"></i><input id="web-search-input" type="search" autocomplete="off" placeholder="搜索互联网，或在下方筛选站点" aria-label="互联网搜索关键词"></label>
+              <button type="submit"><span>搜索</span><i data-lucide="arrow-up-right"></i></button>
+            </form>
+
+            <div class="directory-layout">
+              <aside class="directory-index" aria-label="网址分类">
+                <div class="directory-index-head"><span class="section-code">INDEX</span><strong>分类索引</strong></div>
+                <div id="directory-filters"></div>
+              </aside>
+              <div class="directory-content">
+                <div class="directory-tools">
+                  <label class="inline-search directory-search"><i data-lucide="search"></i><input id="directory-search" type="search" placeholder="输入站点名称或网址" aria-label="筛选网址导航"></label>
+                  <span id="directory-result-note">显示全部站点</span>
+                </div>
+                <div id="directory-groups"></div>
+              </div>
+            </div>
+          </section>
+
+          <section class="view" data-view="tasks" aria-labelledby="tasks-title">
+            <div class="page-heading">
+              <div><span class="section-code">EXECUTION BOARD</span><h1 id="tasks-title">任务推进</h1><p>课程、科研与个人成长，统一收口到可执行动作。</p></div>
+              <button class="primary-button auth-gated" type="button" data-action="add" data-kind="tasks"><i data-lucide="plus"></i> 新增任务</button>
+            </div>
+            <div class="filter-bar task-toolbar">
+              <div class="segmented-control" id="task-filters" aria-label="任务筛选">
+                <button class="is-active" type="button" data-filter="all">全部</button>
+                <button type="button" data-filter="high">高优先级</button>
+                <button type="button" data-filter="due">即将截止</button>
+              </div>
+              <span class="toolbar-note"><i data-lucide="circle-dot"></i> 点击任务状态可快速推进</span>
+            </div>
+            <div class="kanban" id="task-board"></div>
+          </section>
+
+          <section class="view calendar-view" data-view="calendar" aria-labelledby="calendar-title">
+            <header class="calendar-toolbar">
+              <div class="calendar-title-block">
+                <span class="section-code">SCHEDULE</span>
+                <h1 id="calendar-title">日历</h1>
+              </div>
+              <div class="calendar-navigation">
+                <button class="secondary-button calendar-today" id="calendar-today" type="button">今天</button>
+                <div class="calendar-arrow-group" aria-label="切换日期">
+                  <button class="icon-button" id="calendar-prev" type="button" aria-label="上一时段"><i data-lucide="chevron-left"></i></button>
+                  <button class="icon-button" id="calendar-next" type="button" aria-label="下一时段"><i data-lucide="chevron-right"></i></button>
+                </div>
+                <h2 id="calendar-range-title" aria-live="polite"></h2>
+              </div>
+              <div class="calendar-toolbar-actions">
+                <div class="segmented-control calendar-view-switch" id="calendar-view-switch" aria-label="日历视图">
+                  <button type="button" data-calendar-view="month">月</button>
+                  <button class="is-active" type="button" data-calendar-view="week">周</button>
+                  <button type="button" data-calendar-view="day">日</button>
+                </div>
+                <button class="primary-button auth-gated" type="button" data-action="add" data-kind="calendarEvents"><i data-lucide="plus"></i> 新建日程</button>
+              </div>
+            </header>
+
+            <div class="calendar-workspace">
+              <aside class="calendar-sidebar">
+                <section class="mini-calendar-panel" aria-labelledby="mini-calendar-title">
+                  <header><strong id="mini-calendar-title"></strong><span>GMT+8</span></header>
+                  <div class="mini-calendar" id="mini-calendar"></div>
+                </section>
+                <section class="calendar-list-panel" aria-labelledby="upcoming-title">
+                  <header><span class="section-code">UP NEXT</span><h2 id="upcoming-title">接下来</h2></header>
+                  <div id="calendar-upcoming"></div>
+                </section>
+              </aside>
+              <section class="calendar-canvas-wrap" aria-label="日程时间表">
+                <div class="calendar-canvas" id="calendar-canvas"></div>
+              </section>
+            </div>
+          </section>
+
+          <section class="view" data-view="papers" aria-labelledby="papers-title">
+            <div class="page-heading">
+              <div><span class="section-code">PAPER LIBRARY</span><h1 id="papers-title">论文队列</h1><p>从“待读”到“完成”，保留每篇论文的阅读上下文。</p></div>
+              <button class="primary-button auth-gated" type="button" data-action="add" data-kind="papers"><i data-lucide="plus"></i> 收录论文</button>
+            </div>
+            <div class="filter-bar">
+              <div class="segmented-control" id="paper-filters" aria-label="论文状态筛选">
+                <button class="is-active" type="button" data-filter="all">全部</button>
+                <button type="button" data-filter="queue">待读</button>
+                <button type="button" data-filter="reading">精读中</button>
+                <button type="button" data-filter="done">已完成</button>
+              </div>
+              <label class="inline-search"><i data-lucide="search"></i><input id="paper-search" type="search" placeholder="标题、作者或标签" aria-label="筛选论文"></label>
+            </div>
+            <div class="paper-table-wrap">
+              <table class="paper-table">
+                <thead><tr><th>论文</th><th>来源</th><th>标签</th><th>进度</th><th><span class="sr-only">操作</span></th></tr></thead>
+                <tbody id="paper-table-body"></tbody>
+              </table>
+              <div class="mobile-paper-list" id="mobile-paper-list"></div>
+            </div>
+          </section>
+
+          <section class="view" data-view="focus" aria-labelledby="focus-title">
+            <div class="focus-layout">
+              <section class="timer-stage">
+                <div class="focus-heading"><span class="section-code">DEEP WORK</span><h1 id="focus-title">只做眼前这一件事。</h1></div>
+                <div class="mode-switch segmented-control" id="timer-modes" aria-label="计时模式">
+                  <button class="is-active" type="button" data-minutes="25">专注 25</button>
+                  <button type="button" data-minutes="5" data-break="true">短休息 5</button>
+                  <button type="button" data-minutes="50">深度 50</button>
+                </div>
+                <div class="custom-duration">
+                  <label for="custom-focus-minutes"><i data-lucide="clock-3"></i><span>自定义</span><input id="custom-focus-minutes" type="number" min="1" max="240" inputmode="numeric" value="25" aria-label="自定义专注分钟数"><span>分钟</span></label>
+                  <button class="secondary-button" id="apply-custom-focus" type="button">设定</button>
+                </div>
+                <div class="timer" id="timer-display" role="timer" aria-live="off">25:00</div>
+                <label class="focus-label"><span>本轮目标</span><input id="focus-label" type="text" maxlength="120" placeholder="例如：读完论文第 3 节"></label>
+                <div class="timer-controls">
+                  <button class="secondary-button icon-command" id="timer-reset" type="button"><i data-lucide="rotate-ccw"></i><span>重置</span></button>
+                  <button class="focus-start" id="timer-toggle" type="button"><i data-lucide="play"></i><span>开始专注</span></button>
+                  <button class="secondary-button icon-command" id="timer-skip" type="button"><i data-lucide="skip-forward"></i><span>完成</span></button>
+                </div>
+              </section>
+              <aside class="focus-aside">
+                <span class="section-code">FOCUS PROTOCOL</span>
+                <h2>为深度工作<br>留出完整边界</h2>
+                <div class="protocol-list">
+                  <div><strong>01</strong><span>关闭无关窗口，只保留任务材料。</span></div>
+                  <div><strong>02</strong><span>写下本轮明确、可验证的结果。</span></div>
+                  <div><strong>03</strong><span>结束后记录进度，再决定下一轮。</span></div>
+                </div>
+                <div class="focus-week"><span>本周累计</span><strong><span id="focus-page-minutes">0</span> min</strong><div><span id="focus-page-fill"></span></div></div>
+              </aside>
+            </div>
+          </section>
+        </main>
+      </div>
+    </div>
+
+    <nav class="mobile-nav" aria-label="移动端导航">
+      <button class="is-active" type="button" data-route="overview"><i data-lucide="layout-dashboard"></i><span>概览</span></button>
+      <button type="button" data-route="directory"><i data-lucide="compass"></i><span>导航</span></button>
+      <button type="button" data-route="links"><i data-lucide="panels-top-left"></i><span>入口</span></button>
+      <button type="button" data-route="tasks"><i data-lucide="list-checks"></i><span>任务</span></button>
+      <button type="button" data-route="calendar"><i data-lucide="calendar-days"></i><span>日历</span></button>
+      <button type="button" data-route="papers"><i data-lucide="library"></i><span>论文</span></button>
+      <button type="button" data-route="focus"><i data-lucide="timer-reset"></i><span>专注</span></button>
+    </nav>
+
+    <dialog class="modal" id="editor-modal" aria-labelledby="editor-title">
+      <form id="editor-form" method="dialog">
+        <div class="modal-head"><div><span class="section-code" id="editor-code">NEW ITEM</span><h2 id="editor-title">新增</h2></div><button class="icon-button" type="button" data-close-modal aria-label="关闭"><i data-lucide="x"></i></button></div>
+        <div class="form-body" id="editor-fields"></div>
+        <div class="form-actions"><button class="danger-text-button" id="delete-button" type="button"><i data-lucide="trash-2"></i> 删除</button><span></span><button class="secondary-button" type="button" data-close-modal>取消</button><button class="primary-button" id="save-button" type="submit">保存更改</button></div>
+      </form>
+    </dialog>
+
+    <dialog class="modal compact-modal" id="login-modal" aria-labelledby="login-title">
+      <form id="login-form" method="dialog">
+        <div class="modal-head"><div><span class="section-code">OWNER ACCESS</span><h2 id="login-title">进入编辑模式</h2></div><button class="icon-button" type="button" data-close-modal aria-label="关闭"><i data-lucide="x"></i></button></div>
+        <div class="form-body">
+          <p class="form-intro">访客可以浏览工作台；登录后才能修改服务器上的数据。</p>
+          <label class="field"><span>管理密码</span><span class="input-wrap"><i data-lucide="key-round"></i><input id="login-password" name="password" type="password" autocomplete="current-password" required autofocus placeholder="输入 ADMIN_PASSWORD"></span></label>
+          <p class="form-error" id="login-error" role="alert"></p>
+        </div>
+        <div class="form-actions"><span></span><span></span><button class="secondary-button" type="button" data-close-modal>取消</button><button class="primary-button" type="submit">验证并进入</button></div>
+      </form>
+    </dialog>
+
+    <dialog class="command-modal" id="command-modal" aria-label="全局搜索">
+      <div class="command-box">
+        <label><i data-lucide="search"></i><input id="command-input" type="search" placeholder="搜索并跳转…" autocomplete="off"><kbd>ESC</kbd></label>
+        <div class="command-results" id="command-results"></div>
+        <footer><span><kbd>↑</kbd><kbd>↓</kbd> 选择</span><span><kbd>↵</kbd> 打开</span></footer>
+      </div>
+    </dialog>
+
+    <div class="toast-region" id="toast-region" aria-live="polite"></div>
+    <noscript><div class="noscript">此工作台需要 JavaScript 才能使用。</div></noscript>
+  </body>
+</html>
