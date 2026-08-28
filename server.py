@@ -98,6 +98,8 @@ def init_database() -> None:
                 title TEXT NOT NULL,
                 course TEXT NOT NULL DEFAULT '',
                 due_date TEXT NOT NULL DEFAULT '',
+                start_at TEXT NOT NULL DEFAULT '',
+                end_at TEXT NOT NULL DEFAULT '',
                 priority TEXT NOT NULL DEFAULT 'medium',
                 status TEXT NOT NULL DEFAULT 'todo',
                 notes TEXT NOT NULL DEFAULT '',
@@ -144,6 +146,14 @@ def init_database() -> None:
             );
             """
         )
+
+        task_columns = {
+            row["name"] for row in db.execute("PRAGMA table_info(tasks)").fetchall()
+        }
+        if "start_at" not in task_columns:
+            db.execute("ALTER TABLE tasks ADD COLUMN start_at TEXT NOT NULL DEFAULT ''")
+        if "end_at" not in task_columns:
+            db.execute("ALTER TABLE tasks ADD COLUMN end_at TEXT NOT NULL DEFAULT ''")
 
         existing = db.execute("SELECT COUNT(*) FROM settings").fetchone()[0]
         if existing == 0:
@@ -403,6 +413,17 @@ def clean_url(value: Any, field: str = "链接", required: bool = False) -> str:
     return url
 
 
+def clean_local_datetime(value: Any, field: str) -> tuple[str, datetime | None]:
+    text = clean_text(value, field, 16)
+    if not text:
+        return "", None
+    try:
+        parsed = datetime.strptime(text, "%Y-%m-%dT%H:%M")
+    except ValueError as error:
+        raise ValueError(f"{field}格式无效") from error
+    return text, parsed
+
+
 def validate_payload(table: str, data: dict[str, Any]) -> dict[str, Any]:
     if table in {"links", "directory_links"}:
         color = clean_text(data.get("color", "blue"), "颜色", 20)
@@ -420,16 +441,24 @@ def validate_payload(table: str, data: dict[str, Any]) -> dict[str, Any]:
         status = clean_text(data.get("status", "todo"), "状态", 20)
         priority = clean_text(data.get("priority", "medium"), "优先级", 20)
         due_date = clean_text(data.get("due_date"), "截止日期", 10)
+        start_at, start_time = clean_local_datetime(data.get("start_at"), "起始时间")
+        end_at, end_time = clean_local_datetime(data.get("end_at"), "终止时间")
         if status not in ALLOWED_STATUS[table]:
             raise ValueError("任务状态无效")
         if priority not in {"low", "medium", "high"}:
             raise ValueError("任务优先级无效")
         if due_date and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", due_date):
             raise ValueError("截止日期格式无效")
+        if start_time and not end_time:
+            raise ValueError("设置起始时间后还需要设置终止时间")
+        if start_time and end_time and end_time <= start_time:
+            raise ValueError("终止时间必须晚于起始时间")
         return {
             "title": clean_text(data.get("title"), "任务名称", 160, True),
             "course": clean_text(data.get("course"), "领域", 50),
             "due_date": due_date,
+            "start_at": start_at,
+            "end_at": end_at,
             "priority": priority,
             "status": status,
             "notes": clean_text(data.get("notes"), "备注", 1200),

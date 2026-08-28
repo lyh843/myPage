@@ -146,7 +146,7 @@ function githubAvatar(url) {
 function renderOverview() {
   const activeTasks = state.tasks
     .filter((task) => task.status !== "done")
-    .sort((a, b) => priorityRank(b.priority) - priorityRank(a.priority) || compareDates(a.due_date, b.due_date));
+    .sort((a, b) => priorityRank(b.priority) - priorityRank(a.priority) || compareDates(taskSortValue(a), taskSortValue(b)));
   const priority = activeTasks[0];
   $("#today-priority").textContent = priority ? labels.priority[priority.priority] : "—";
   $("#today-priority-label").textContent = priority ? truncate(priority.title, 13) : "尚未安排";
@@ -155,7 +155,7 @@ function renderOverview() {
     ? activeTasks.slice(0, 4).map((task) => `
       <article class="priority-item">
         <span class="priority-dot ${escapeHtml(task.priority)}" aria-hidden="true"></span>
-        <div class="priority-copy"><strong>${escapeHtml(task.title)}</strong><span>${escapeHtml(task.course || "未分类")} · ${formatDue(task.due_date)}</span></div>
+        <div class="priority-copy"><strong>${escapeHtml(task.title)}</strong><span>${escapeHtml(task.course || "未分类")} · ${formatTaskTiming(task)}</span></div>
         <button class="status-button auth-gated" type="button" data-advance-task="${task.id}"><i data-lucide="arrow-right"></i>${labels.taskStatus[task.status]}</button>
       </article>`).join("")
     : emptyState("circle-check-big", "当前没有待办", "可以安排下一项学习任务");
@@ -195,9 +195,12 @@ function renderOverviewCalendar() {
     const ongoing = item.start <= now && item.end > now;
     const dateLabel = overviewCalendarDateLabel(item.start, now);
     const timeLabel = item.event.all_day ? "全天" : `${padNumber(item.start.getHours())}:${padNumber(item.start.getMinutes())}`;
+    const sourceLabel = item.event._source === "task"
+      ? ["任务", item.event.location].filter(Boolean).join(" · ")
+      : item.event.location || item.event.calendar_name || "个人日历";
     return `<button class="overview-calendar-item ${ongoing ? "is-ongoing" : ""}" type="button" data-calendar-open-day="${localDateKey(item.start)}" data-color="${escapeHtml(item.event.color)}">
       <span class="overview-calendar-date"><small>${escapeHtml(dateLabel.label)}</small><strong>${padNumber(item.start.getDate())}</strong><em>${escapeHtml(dateLabel.month)}</em></span>
-      <span class="overview-calendar-copy"><small>${ongoing ? "进行中" : timeLabel}${item.event.repeat_rule !== "none" ? " · 重复" : ""}</small><strong>${escapeHtml(item.event.title)}</strong><em>${escapeHtml(item.event.location || item.event.calendar_name || "个人日历")}</em></span>
+      <span class="overview-calendar-copy"><small>${ongoing ? "进行中" : timeLabel}${item.event.repeat_rule !== "none" ? " · 重复" : ""}</small><strong>${escapeHtml(item.event.title)}</strong><em>${escapeHtml(sourceLabel)}</em></span>
       <i data-lucide="chevron-right"></i>
     </button>`;
   }).join("");
@@ -291,7 +294,7 @@ function renderTasks() {
   const tasks = state.tasks.filter((task) => {
     if (state.taskFilter === "high") return task.priority === "high" && task.status !== "done";
     if (state.taskFilter === "due") {
-      const due = parseDate(task.due_date);
+      const due = taskDeadline(task);
       return task.status !== "done" && due && due.getTime() - now.getTime() < 4 * 86400000;
     }
     return true;
@@ -309,10 +312,11 @@ function renderTasks() {
 function taskCard(task) {
   const dueClass = isOverdue(task) ? "overdue" : "";
   const nextLabel = task.status === "todo" ? "开始" : task.status === "doing" ? "完成" : "已完成";
+  const timingIcon = task.end_at ? "clock-3" : "calendar-days";
   return `<article class="task-card">
     <div class="task-card-top"><span class="priority-mark ${escapeHtml(task.priority)}" title="${labels.priority[task.priority]}优先级"></span><button class="task-edit auth-only" type="button" data-edit="tasks" data-id="${task.id}" aria-label="编辑任务"><i data-lucide="more-horizontal"></i></button></div>
     <h3>${escapeHtml(task.title)}</h3><p>${escapeHtml(task.notes || task.course || "暂无备注")}</p>
-    <div class="task-card-meta"><span class="due ${dueClass}"><i data-lucide="calendar-days"></i>${formatDue(task.due_date)}</span><button class="advance-button auth-gated" type="button" data-advance-task="${task.id}" ${task.status === "done" ? "disabled" : ""}>${nextLabel}<i data-lucide="chevron-right"></i></button></div>
+    <div class="task-card-meta"><span class="due ${dueClass}"><i data-lucide="${timingIcon}"></i>${formatTaskTiming(task)}</span><button class="advance-button auth-gated" type="button" data-advance-task="${task.id}" ${task.status === "done" ? "disabled" : ""}>${nextLabel}<i data-lucide="chevron-right"></i></button></div>
   </article>`;
 }
 
@@ -452,7 +456,47 @@ function calendarOccurrences(rangeStart, rangeEnd) {
       if (rule === "none") break;
     }
   });
+  state.tasks.forEach((task) => {
+    const event = taskCalendarEvent(task);
+    if (!event) return;
+    const start = parseLocalDateTime(event.start_at);
+    const end = parseLocalDateTime(event.end_at);
+    if (end > rangeStart && start < rangeEnd) occurrences.push({ event, start, end, key: `task-${task.id}` });
+  });
   return occurrences.sort((a, b) => a.start - b.start || a.end - b.end);
+}
+
+function taskCalendarEvent(task) {
+  const end = parseLocalDateTime(task.end_at);
+  if (!end) return null;
+  const start = parseLocalDateTime(task.start_at) || new Date(end.getTime() - 60 * 60000);
+  if (start >= end) return null;
+  const color = task.status === "done" ? "green" : { high: "red", medium: "blue", low: "green" }[task.priority] || "blue";
+  return {
+    id: task.id,
+    title: task.title,
+    start_at: localDateTimeValue(start),
+    end_at: localDateTimeValue(end),
+    all_day: false,
+    location: task.course || "",
+    calendar_name: "任务",
+    color,
+    repeat_rule: "none",
+    repeat_until: "",
+    _editor_kind: "tasks",
+    _source: "task",
+  };
+}
+
+function calendarEditAttributes(event) {
+  const kind = event._editor_kind || "calendarEvents";
+  const source = event._source || "event";
+  return `data-edit="${kind}" data-id="${event.id}" data-color="${escapeHtml(event.color)}" data-calendar-source="${source}"`;
+}
+
+function calendarTrailingIcon(event) {
+  if (event._source === "task") return '<i data-lucide="list-checks" aria-label="任务"></i>';
+  return event.repeat_rule !== "none" ? '<i data-lucide="repeat-2" aria-label="重复日程"></i>' : "";
 }
 
 function calendarRangeTitle(range) {
@@ -497,9 +541,9 @@ function renderCalendarUpcoming() {
   const now = new Date();
   const upcoming = calendarOccurrences(now, addCalendarDays(now, 90)).filter((item) => item.end > now).slice(0, 6);
   $("#calendar-upcoming").innerHTML = upcoming.length ? upcoming.map((item) => `
-    <button class="upcoming-event" type="button" data-edit="calendarEvents" data-id="${item.event.id}" data-color="${escapeHtml(item.event.color)}">
+    <button class="upcoming-event" type="button" ${calendarEditAttributes(item.event)}>
       <span class="upcoming-date"><strong>${padNumber(item.start.getDate())}</strong><small>${item.start.getMonth() + 1} 月</small></span>
-      <span><strong>${escapeHtml(item.event.title)}</strong><small>${item.event.all_day ? "全天" : `${padNumber(item.start.getHours())}:${padNumber(item.start.getMinutes())}`} ${item.event.location ? `· ${escapeHtml(item.event.location)}` : ""}</small></span>
+      <span><strong>${escapeHtml(item.event.title)}</strong><small>${item.event.all_day ? "全天" : `${padNumber(item.start.getHours())}:${padNumber(item.start.getMinutes())}`}${item.event._source === "task" ? " · 任务" : ""} ${item.event.location ? `· ${escapeHtml(item.event.location)}` : ""}</small></span>
     </button>`).join("") : `<div class="calendar-empty"><i data-lucide="calendar-check-2"></i><span>近期没有日程</span></div>`;
 }
 
@@ -524,7 +568,7 @@ function renderMonthCalendar(range) {
 function monthEventChip(occurrence, day) {
   const startsToday = sameCalendarDay(occurrence.start, day);
   const time = occurrence.event.all_day ? "" : startsToday ? `${padNumber(occurrence.start.getHours())}:${padNumber(occurrence.start.getMinutes())}` : "←";
-  return `<button class="month-event" type="button" data-edit="calendarEvents" data-id="${occurrence.event.id}" data-color="${escapeHtml(occurrence.event.color)}" title="${escapeHtml(occurrence.event.title)}"><span>${time}</span><strong>${escapeHtml(occurrence.event.title)}</strong>${occurrence.event.repeat_rule !== "none" ? '<i data-lucide="repeat-2"></i>' : ""}</button>`;
+  return `<button class="month-event" type="button" ${calendarEditAttributes(occurrence.event)} title="${escapeHtml(occurrence.event.title)}"><span>${time}</span><strong>${escapeHtml(occurrence.event.title)}</strong>${calendarTrailingIcon(occurrence.event)}</button>`;
 }
 
 function renderTimeCalendar(range) {
@@ -536,7 +580,7 @@ function renderTimeCalendar(range) {
   const allDayColumns = days.map((day) => {
     const start = startOfCalendarDay(day);
     const end = addCalendarDays(start, 1);
-    return `<div class="all-day-column">${allDay.filter((item) => item.end > start && item.start < end).map((item) => `<button type="button" data-edit="calendarEvents" data-id="${item.event.id}" data-color="${escapeHtml(item.event.color)}"><strong>${escapeHtml(item.event.title)}</strong>${item.event.repeat_rule !== "none" ? '<i data-lucide="repeat-2"></i>' : ""}</button>`).join("")}</div>`;
+    return `<div class="all-day-column">${allDay.filter((item) => item.end > start && item.start < end).map((item) => `<button type="button" ${calendarEditAttributes(item.event)}><strong>${escapeHtml(item.event.title)}</strong>${calendarTrailingIcon(item.event)}</button>`).join("")}</div>`;
   }).join("");
   const timeLabels = Array.from({ length: 24 }, (_, hour) => `<span>${padNumber(hour)}:00</span>`).join("");
   const columns = days.map((day) => renderTimeDayColumn(day, timed)).join("");
@@ -569,7 +613,7 @@ function renderTimeDayColumn(day, occurrences) {
     const clippedEnd = item.end > dayEnd ? dayEnd : item.end;
     const top = Math.max(0, (clippedStart - dayStart) / 60000);
     const height = Math.max(24, (clippedEnd - clippedStart) / 60000);
-    return `<button class="time-event" type="button" style="--event-top:${top}px;--event-height:${height}px" data-edit="calendarEvents" data-id="${item.event.id}" data-color="${escapeHtml(item.event.color)}" title="${escapeHtml(item.event.title)}"><strong>${escapeHtml(item.event.title)}</strong><span>${padNumber(item.start.getHours())}:${padNumber(item.start.getMinutes())}${item.event.location ? ` · ${escapeHtml(item.event.location)}` : ""}</span></button>`;
+    return `<button class="time-event" type="button" style="--event-top:${top}px;--event-height:${height}px" ${calendarEditAttributes(item.event)} title="${escapeHtml(item.event.title)}"><strong>${escapeHtml(item.event.title)}</strong><span>${padNumber(item.start.getHours())}:${padNumber(item.start.getMinutes())}${item.event._source === "task" ? " · 任务" : ""}${item.event.location ? ` · ${escapeHtml(item.event.location)}` : ""}</span></button>`;
   }).join("");
   const now = new Date();
   const nowLine = sameCalendarDay(day, now) ? `<span class="current-time-line" style="--now-top:${now.getHours() * 60 + now.getMinutes()}px"><i></i></span>` : "";
@@ -617,9 +661,23 @@ function emptyState(icon, title, description) {
 function priorityRank(value) { return { low: 1, medium: 2, high: 3 }[value] || 0; }
 function compareDates(a, b) { return (a || "9999").localeCompare(b || "9999"); }
 function parseDate(value) { return value ? new Date(`${value}T23:59:59`) : null; }
-function isOverdue(task) { const due = parseDate(task.due_date); return task.status !== "done" && due && due < new Date(); }
+function taskSortValue(task) { return task.end_at || task.due_date; }
+function taskDeadline(task) { return parseLocalDateTime(task.end_at) || parseDate(task.due_date); }
+function isOverdue(task) { const due = taskDeadline(task); return task.status !== "done" && due && due < new Date(); }
 function truncate(value, size) { const text = String(value || ""); return text.length > size ? `${text.slice(0, size)}…` : text; }
 function domainOf(url) { try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return "打开链接"; } }
+
+function formatTaskTiming(task) {
+  const end = parseLocalDateTime(task.end_at);
+  if (!end) return formatDue(task.due_date);
+  const start = parseLocalDateTime(task.start_at);
+  const endLabel = `${padNumber(end.getMonth() + 1)}/${padNumber(end.getDate())} ${padNumber(end.getHours())}:${padNumber(end.getMinutes())}`;
+  if (!start) return `${endLabel} 前`;
+  const startTime = `${padNumber(start.getHours())}:${padNumber(start.getMinutes())}`;
+  const endTime = `${padNumber(end.getHours())}:${padNumber(end.getMinutes())}`;
+  if (sameCalendarDay(start, end)) return `${padNumber(start.getMonth() + 1)}/${padNumber(start.getDate())} ${startTime}–${endTime}`;
+  return `${padNumber(start.getMonth() + 1)}/${padNumber(start.getDate())} ${startTime}–${endLabel}`;
+}
 
 function formatDue(value) {
   if (!value) return "未设截止";
@@ -674,6 +732,7 @@ function editorFields(kind, record = {}) {
   if (kind === "tasks") return `
     <label class="field"><span>任务名称 *</span><input name="title" maxlength="160" required value="${escapeHtml(record.title)}" placeholder="写成一个明确的行动"></label>
     <div class="field-row"><label class="field"><span>领域 / 课程</span><input name="course" maxlength="50" value="${escapeHtml(record.course)}" placeholder="科研、深度学习…"></label><label class="field"><span>截止日期</span><input name="due_date" type="date" value="${escapeHtml(record.due_date)}"></label></div>
+    <div class="field-row"><label class="field"><span>起始时间</span><input name="start_at" type="datetime-local" value="${escapeHtml(record.start_at)}"></label><label class="field"><span>终止时间</span><input name="end_at" type="datetime-local" value="${escapeHtml(record.end_at)}"></label></div>
     <div class="field-row"><label class="field"><span>优先级</span><select name="priority"><option value="low" ${record.priority === "low" ? "selected" : ""}>低</option><option value="medium" ${!record.priority || record.priority === "medium" ? "selected" : ""}>中</option><option value="high" ${record.priority === "high" ? "selected" : ""}>高</option></select></label><label class="field"><span>状态</span><select name="status"><option value="todo" ${!record.status || record.status === "todo" ? "selected" : ""}>待处理</option><option value="doing" ${record.status === "doing" ? "selected" : ""}>推进中</option><option value="done" ${record.status === "done" ? "selected" : ""}>已完成</option></select></label></div>
     <label class="field"><span>备注</span><textarea name="notes" maxlength="1200" placeholder="记录交付标准或下一步">${escapeHtml(record.notes)}</textarea></label>`;
   if (kind === "papers") return `
@@ -743,9 +802,16 @@ function openEditor(kind, id = null, defaults = {}) {
 async function saveEditor(event) {
   event.preventDefault();
   const form = event.currentTarget;
+  const { kind, id } = state.editor;
+  if (kind === "tasks") {
+    const startInput = form.elements.namedItem("start_at");
+    const endInput = form.elements.namedItem("end_at");
+    endInput.setCustomValidity("");
+    if (startInput.value && !endInput.value) endInput.setCustomValidity("设置起始时间后还需要设置终止时间");
+    if (startInput.value && endInput.value && endInput.value <= startInput.value) endInput.setCustomValidity("终止时间必须晚于起始时间");
+  }
   if (!form.reportValidity()) return;
   const data = Object.fromEntries(new FormData(form));
-  const { kind, id } = state.editor;
   if (kind === "papers") data.tags = data.tags.split(",").map((tag) => tag.trim()).filter(Boolean);
   if (kind === "calendarEvents") {
     data.all_day = data.all_day === "true";

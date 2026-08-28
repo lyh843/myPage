@@ -7,6 +7,7 @@ import http.cookiejar
 import json
 import os
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -26,6 +27,24 @@ def free_port() -> int:
         return int(sock.getsockname()[1])
 
 
+def prepare_legacy_tasks_schema(data_dir: str) -> None:
+    """Exercise the in-place migration used by existing installations."""
+    with sqlite3.connect(Path(data_dir) / "workspace.db") as db:
+        db.execute(
+            """CREATE TABLE tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                course TEXT NOT NULL DEFAULT '',
+                due_date TEXT NOT NULL DEFAULT '',
+                priority TEXT NOT NULL DEFAULT 'medium',
+                status TEXT NOT NULL DEFAULT 'todo',
+                notes TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )"""
+        )
+
+
 def main() -> None:
     port = free_port()
     base = f"http://127.0.0.1:{port}"
@@ -33,6 +52,7 @@ def main() -> None:
     opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar))
 
     with tempfile.TemporaryDirectory(prefix="research-desk-test-") as data_dir:
+        prepare_legacy_tasks_schema(data_dir)
         env = {
             **os.environ,
             "HOST": "127.0.0.1",
@@ -58,6 +78,7 @@ def main() -> None:
             assert len(bootstrap["directory_links"]) == 98
             assert bootstrap["stats"]["directory_links"] == 98
             assert len(bootstrap["tasks"]) == 4
+            assert all("start_at" in item and "end_at" in item for item in bootstrap["tasks"])
             assert len(bootstrap["papers"]) == 3
             assert bootstrap["calendar_events"] == []
 
@@ -147,12 +168,16 @@ def main() -> None:
                     "title": "Integration task",
                     "course": "测试",
                     "due_date": "2026-08-28",
+                    "start_at": "2026-08-28T09:00",
+                    "end_at": "2026-08-28T10:30",
                     "priority": "high",
                     "status": "todo",
                     "notes": "Exercise CRUD",
                 },
                 csrf=csrf,
             )
+            assert task["start_at"] == "2026-08-28T09:00"
+            assert task["end_at"] == "2026-08-28T10:30"
             task["status"] = "doing"
             updated_task = request_json(
                 opener,
@@ -162,6 +187,42 @@ def main() -> None:
                 csrf=csrf,
             )
             assert updated_task["status"] == "doing"
+            assert updated_task["end_at"] == "2026-08-28T10:30"
+
+            end_only_task = request_json(
+                opener,
+                f"{base}/api/tasks",
+                method="POST",
+                payload={
+                    "title": "End-only task",
+                    "end_at": "2026-08-29T18:00",
+                    "priority": "medium",
+                    "status": "todo",
+                },
+                csrf=csrf,
+            )
+            assert end_only_task["start_at"] == ""
+            assert end_only_task["end_at"] == "2026-08-29T18:00"
+            expect_status(
+                opener,
+                f"{base}/api/tasks",
+                400,
+                method="POST",
+                payload={"title": "Start without end", "start_at": "2026-08-30T09:00"},
+                csrf=csrf,
+            )
+            expect_status(
+                opener,
+                f"{base}/api/tasks",
+                400,
+                method="POST",
+                payload={
+                    "title": "Invalid task interval",
+                    "start_at": "2026-08-30T10:00",
+                    "end_at": "2026-08-30T09:00",
+                },
+                csrf=csrf,
+            )
 
             paper = request_json(
                 opener,
@@ -255,7 +316,7 @@ def main() -> None:
                 assert "Content-Security-Policy" in response.headers
                 assert "style-src-attr 'unsafe-inline'" in response.headers["Content-Security-Policy"]
 
-            print("PASS: static files, auth, CSRF, CRUD, calendar, focus tracking and export")
+            print("PASS: static files, auth, CSRF, CRUD, task scheduling, calendar, focus tracking and export")
         finally:
             process.terminate()
             try:
@@ -300,9 +361,10 @@ def expect_status(
     *,
     method: str,
     payload: dict,
+    csrf: str = "",
 ) -> None:
     try:
-        request_json(opener, url, method=method, payload=payload)
+        request_json(opener, url, method=method, payload=payload, csrf=csrf)
     except urllib.error.HTTPError as error:
         assert error.code == status, f"expected {status}, received {error.code}"
     else:
