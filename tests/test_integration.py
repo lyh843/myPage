@@ -77,6 +77,9 @@ def main() -> None:
             assert len(bootstrap["links"]) == 6
             assert len(bootstrap["directory_links"]) == 98
             assert bootstrap["stats"]["directory_links"] == 98
+            assert bootstrap["directory_categories"] == list(
+                dict.fromkeys(item["category"] for item in bootstrap["directory_links"])
+            )
             assert len(bootstrap["tasks"]) == 4
             assert all("start_at" in item and "end_at" in item for item in bootstrap["tasks"])
             assert len(bootstrap["papers"]) == 3
@@ -88,6 +91,13 @@ def main() -> None:
                 401,
                 method="POST",
                 payload={"title": "Unauthorized"},
+            )
+            expect_status(
+                opener,
+                f"{base}/api/directory-categories",
+                401,
+                method="POST",
+                payload={"name": "Unauthorized"},
             )
             expect_status(
                 opener,
@@ -103,6 +113,45 @@ def main() -> None:
                 payload={"password": PASSWORD},
             )
             csrf = login["csrf_token"]
+            expect_status(
+                opener,
+                f"{base}/api/directory-categories",
+                403,
+                method="POST",
+                payload={"name": "Missing CSRF"},
+            )
+            for name in ("", "   ", "x" * 31, "全部", 123, []):
+                expect_status(
+                    opener,
+                    f"{base}/api/directory-categories",
+                    400,
+                    method="POST",
+                    payload={"name": name},
+                    csrf=csrf,
+                )
+            category = request_json(
+                opener,
+                f"{base}/api/directory-categories",
+                method="POST",
+                payload={"name": "  Integration category  "},
+                csrf=csrf,
+            )
+            assert category == {"name": "Integration category"}
+            categories = request_json(opener, f"{base}/api/bootstrap")["directory_categories"]
+            assert categories == [*bootstrap["directory_categories"], category["name"]]
+            for name in (category["name"], "  Integration category  ", bootstrap["directory_categories"][0]):
+                expect_status(
+                    opener,
+                    f"{base}/api/directory-categories",
+                    409,
+                    method="POST",
+                    payload={"name": name},
+                    csrf=csrf,
+                )
+            with sqlite3.connect(Path(data_dir) / "workspace.db") as db:
+                assert db.execute(
+                    "SELECT name FROM directory_categories WHERE name = ?", (category["name"],)
+                ).fetchone() == (category["name"],)
             expect_status(
                 opener,
                 f"{base}/api/tasks",
@@ -143,14 +192,16 @@ def main() -> None:
                 payload={
                     "title": "Directory Test",
                     "url": "https://example.com/directory",
-                    "category": "开发工具",
+                    "category": category["name"],
                     "note": "Created by integration test",
                     "icon": "wrench",
                     "color": "green",
                 },
                 csrf=csrf,
             )
+            assert directory_link["category"] == category["name"]
             directory_link["title"] = "Updated Directory Test"
+            directory_link["category"] = "API category"
             updated_directory_link = request_json(
                 opener,
                 f"{base}/api/directory-links/{directory_link['id']}",
@@ -159,6 +210,8 @@ def main() -> None:
                 csrf=csrf,
             )
             assert updated_directory_link["title"] == "Updated Directory Test"
+            assert updated_directory_link["category"] == "API category"
+            assert "API category" in request_json(opener, f"{base}/api/bootstrap")["directory_categories"]
 
             task = request_json(
                 opener,
@@ -285,6 +338,7 @@ def main() -> None:
             assert exported["stats"]["focus_minutes"] == 25
             assert any(item["id"] == paper["id"] for item in exported["papers"])
             assert any(item["id"] == calendar_event["id"] for item in exported["calendar_events"])
+            assert category["name"] in exported["directory_categories"]
 
             request_json(
                 opener,
@@ -308,6 +362,8 @@ def main() -> None:
             assert final["authenticated"] is True
             assert not any(item["id"] == link["id"] for item in final["links"])
             assert len(final["directory_links"]) == 98
+            assert category["name"] in final["directory_categories"]
+            assert "API category" in final["directory_categories"]
 
             with opener.open(f"{base}/") as response:
                 html = response.read().decode()
@@ -316,7 +372,7 @@ def main() -> None:
                 assert "Content-Security-Policy" in response.headers
                 assert "style-src-attr 'unsafe-inline'" in response.headers["Content-Security-Policy"]
 
-            print("PASS: static files, auth, CSRF, CRUD, task scheduling, calendar, focus tracking and export")
+            print("PASS: static files, auth, CSRF, CRUD, directory categories, task scheduling, calendar, focus tracking and export")
         finally:
             process.terminate()
             try:

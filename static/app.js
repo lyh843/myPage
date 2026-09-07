@@ -6,6 +6,7 @@ const state = {
   settings: {},
   links: [],
   directoryLinks: [],
+  directoryCategories: [],
   tasks: [],
   papers: [],
   calendarEvents: [],
@@ -91,6 +92,7 @@ async function loadData({ quiet = false } = {}) {
     state.settings = data.settings || {};
     state.links = data.links || [];
     state.directoryLinks = data.directory_links || [];
+    state.directoryCategories = data.directory_categories || [...new Set(state.directoryLinks.map((link) => link.category).filter(Boolean))];
     state.tasks = data.tasks || [];
     state.papers = data.papers || [];
     state.calendarEvents = data.calendar_events || [];
@@ -238,7 +240,7 @@ function renderLinks() {
 }
 
 function renderDirectory() {
-  const categories = [...new Set(state.directoryLinks.map((link) => link.category).filter(Boolean))];
+  const categories = state.directoryCategories;
   if (state.directoryFilter !== "全部" && !categories.includes(state.directoryFilter)) state.directoryFilter = "全部";
   const counts = Object.fromEntries(categories.map((category) => [category, state.directoryLinks.filter((link) => link.category === category).length]));
   $("#directory-filters").innerHTML = ["全部", ...categories].map((category) => `
@@ -266,7 +268,9 @@ function renderDirectory() {
           <button class="directory-edit auth-only" type="button" data-edit="directoryLinks" data-id="${link.id}" aria-label="编辑 ${escapeHtml(link.title)}"><i data-lucide="pencil"></i></button>
         </article>`).join("")}</div>
     </section>`;
-  }).join("") : emptyState("search-x", "没有匹配的站点", "换一个关键词或分类试试");
+  }).join("") : state.directoryFilter !== "全部" && !query && counts[state.directoryFilter] === 0
+    ? emptyState("folder-open", "这个分类还没有站点", "")
+    : emptyState("search-x", "没有匹配的站点", "换一个关键词或分类试试");
   refreshIcons();
 }
 
@@ -379,7 +383,7 @@ function eventEditorParts(value) {
 }
 
 function endpointForKind(kind) {
-  return { directoryLinks: "directory-links", calendarEvents: "calendar-events" }[kind] || kind;
+  return { directoryLinks: "directory-links", directoryCategories: "directory-categories", calendarEvents: "calendar-events" }[kind] || kind;
 }
 
 function syncEventAllDayFields() {
@@ -723,10 +727,14 @@ function showLogin() {
 }
 
 function editorFields(kind, record = {}) {
+  if (kind === "directoryCategories") return `
+    <label class="field"><span>分类名称 *</span><input name="name" maxlength="30" required placeholder="例如：科研工具"></label>`;
   if (kind === "links" || kind === "directoryLinks") return `
     <label class="field"><span>名称 *</span><input name="title" maxlength="80" required value="${escapeHtml(record.title)}" placeholder="例如：Semantic Scholar"></label>
     <label class="field"><span>网址 *</span><input name="url" type="url" maxlength="1200" required value="${escapeHtml(record.url)}" placeholder="https://"></label>
-    <div class="field-row"><label class="field"><span>分类</span><input name="category" maxlength="30" value="${escapeHtml(record.category || "工具")}" placeholder="论文 / 工具 / 课程"></label><label class="field"><span>图标</span><select name="icon">${iconOptions(record.icon)}</select></label></div>
+    <div class="field-row"><label class="field"><span>分类</span>${kind === "directoryLinks"
+      ? `<select name="category" required><option value="">请选择分类</option>${state.directoryCategories.map((category) => `<option value="${escapeHtml(category)}" ${category === (record.category || state.directoryFilter) ? "selected" : ""}>${escapeHtml(category)}</option>`).join("")}</select>`
+      : `<input name="category" maxlength="30" value="${escapeHtml(record.category || "工具")}" placeholder="论文 / 工具 / 课程">`}</label><label class="field"><span>图标</span><select name="icon">${iconOptions(record.icon)}</select></label></div>
     <label class="field"><span>一句备注</span><input name="note" maxlength="160" value="${escapeHtml(record.note)}" placeholder="这个入口用于什么"></label>
     <div class="field"><span>标识色</span><div class="color-options">${["blue", "red", "yellow", "green", "dark"].map((color) => `<label title="${color}"><input type="radio" name="color" value="${color}" ${(record.color || "blue") === color ? "checked" : ""}><span style="--swatch:var(--${color === "dark" ? "ink" : color})"></span></label>`).join("")}</div></div>`;
   if (kind === "tasks") return `
@@ -786,7 +794,7 @@ function openEditor(kind, id = null, defaults = {}) {
   requireAuth(() => {
     const record = id === null ? defaults : state[kind].find((item) => item.id === Number(id)) || {};
     state.editor = { kind, id: id === null ? null : Number(id) };
-    const nouns = { links: "快捷入口", directoryLinks: "导航站点", tasks: "任务", calendarEvents: "日程", papers: "论文", settings: "工作台设置" };
+    const nouns = { links: "快捷入口", directoryLinks: "导航站点", directoryCategories: "分类", tasks: "任务", calendarEvents: "日程", papers: "论文", settings: "工作台设置" };
     $("#editor-code").textContent = kind === "settings" ? "WORKSPACE PROFILE" : id === null ? "NEW ITEM" : "EDIT ITEM";
     $("#editor-title").textContent = kind === "settings" ? nouns[kind] : `${id === null ? "新增" : "编辑"}${nouns[kind]}`;
     $("#editor-fields").innerHTML = editorFields(kind, record);
@@ -829,7 +837,11 @@ async function saveEditor(event) {
   button.disabled = true;
   button.textContent = "正在保存…";
   try {
-    await api(path, { method, body: JSON.stringify(data) });
+    const saved = await api(path, { method, body: JSON.stringify(data) });
+    if (kind === "directoryCategories") {
+      state.directoryFilter = saved.name;
+      $("#directory-search").value = "";
+    }
     $("#editor-modal").close();
     await loadData({ quiet: true });
     toast(kind === "settings" ? "工作台设置已更新" : id === null ? "已添加" : "更改已保存");

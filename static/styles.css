@@ -371,7 +371,8 @@ main { width: 100%; }
 .open-link { display: inline-flex; align-items: center; gap: 5px; color: var(--blue); font-size: 10px; font-weight: 650; text-decoration: none; }
 .open-link svg { width: 13px; }
 
-.directory-heading-actions { display: flex; align-items: center; gap: 18px; }
+.directory-heading-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 18px; }
+.directory-heading-actions > button { flex-shrink: 0; }
 .directory-heading-actions > span { color: var(--muted); font: 10px var(--font-mono); white-space: nowrap; }
 .directory-heading-actions > span strong { color: var(--ink); font-size: 18px; }
 .jump-console {
@@ -400,7 +401,8 @@ main { width: 100%; }
 .directory-index-head .section-code { margin-bottom: 2px; color: var(--muted); }
 .directory-index-head strong { font-size: 13px; }
 .directory-index > div:last-child { display: grid; padding-top: 8px; }
-.directory-index button { display: grid; min-height: 37px; grid-template-columns: 1fr auto; align-items: center; gap: 10px; padding: 0 8px; border: 0; border-left: 2px solid transparent; background: transparent; color: var(--muted); font-size: 11px; text-align: left; cursor: pointer; }
+.directory-index button { display: grid; min-height: 37px; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 0 8px; border: 0; border-left: 2px solid transparent; background: transparent; color: var(--muted); font-size: 11px; text-align: left; cursor: pointer; }
+.directory-index button strong { overflow-wrap: anywhere; }
 .directory-index button span { color: #8b949f; font: 9px var(--font-mono); }
 .directory-index button:hover { background: #edf0f4; color: var(--ink); }
 .directory-index button.is-active { border-left-color: var(--blue); background: var(--blue-soft); color: var(--blue); font-weight: 700; }
@@ -409,8 +411,8 @@ main { width: 100%; }
 .directory-search input { width: 100%; }
 .directory-tools > span { padding-top: 9px; color: var(--muted); font: 9px var(--font-mono); }
 .directory-group { scroll-margin-top: 85px; }
-.directory-group-head { display: grid; min-height: 64px; grid-template-columns: 1fr auto; align-items: center; gap: 20px; border-bottom: 1px solid var(--line); }
-.directory-group-head h2 { display: flex; align-items: baseline; gap: 9px; margin: 0; font-size: 14px; }
+.directory-group-head { display: grid; min-height: 64px; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 20px; border-bottom: 1px solid var(--line); }
+.directory-group-head h2 { display: flex; min-width: 0; flex-wrap: wrap; align-items: baseline; gap: 9px; margin: 0; font-size: 14px; overflow-wrap: anywhere; }
 .directory-group-head h2 span { color: var(--muted); font: 9px var(--font-mono); }
 .directory-group-head > span { color: var(--muted); font: 9px var(--font-mono); }
 .directory-site-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-left: 1px solid var(--line); }
@@ -682,7 +684,7 @@ dialog::backdrop { background: rgb(14 17 22 / 55%); backdrop-filter: blur(3px); 
 .modal-head .icon-button { border: 0; }
 .form-body { display: grid; gap: 16px; padding: 22px 24px; overflow: auto; }
 .form-intro { margin: 0 0 4px; color: var(--muted); font-size: 12px; }
-.field { display: grid; gap: 6px; }
+.field { display: grid; min-width: 0; gap: 6px; }
 .field > span:first-child { color: #4d5661; font-size: 10px; font-weight: 650; }
 .field input, .field select, .field textarea { width: 100%; min-height: 40px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 4px; outline: 0; background: white; }
 .field textarea { min-height: 82px; resize: vertical; }

@@ -93,6 +93,10 @@ def init_database() -> None:
                 updated_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS directory_categories (
+                name TEXT PRIMARY KEY
+            );
+
             CREATE TABLE IF NOT EXISTS tasks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 title TEXT NOT NULL,
@@ -168,6 +172,10 @@ def init_database() -> None:
             db.execute(
                 "INSERT INTO settings (key, value) VALUES ('directory_seed_version', 'legacy-v1')"
             )
+        db.execute(
+            """INSERT OR IGNORE INTO directory_categories (name)
+            SELECT category FROM directory_links WHERE category != '' ORDER BY position, id"""
+        )
 
 
 def seed_database(db: sqlite3.Connection) -> None:
@@ -543,6 +551,9 @@ def get_bootstrap_data(authenticated: bool) -> dict[str, Any]:
         if can_read:
             links = [row_to_dict(row) for row in db.execute("SELECT * FROM links ORDER BY position, id")]
             directory_links = [row_to_dict(row) for row in db.execute("SELECT * FROM directory_links ORDER BY position, id")]
+            directory_categories = [
+                row["name"] for row in db.execute("SELECT name FROM directory_categories ORDER BY rowid")
+            ]
             tasks = [row_to_dict(row) for row in db.execute("SELECT * FROM tasks ORDER BY status, due_date, id")]
             papers = [row_to_dict(row) for row in db.execute("SELECT * FROM papers ORDER BY updated_at DESC, id DESC")]
             calendar_events = [
@@ -556,6 +567,7 @@ def get_bootstrap_data(authenticated: bool) -> dict[str, Any]:
             ).fetchone()[0]
         else:
             links, directory_links, tasks, papers, calendar_events, focus_minutes = [], [], [], [], [], 0
+            directory_categories = []
 
     focus_target = int(settings.get("focus_target", "600") or 600)
     stats = {
@@ -571,6 +583,7 @@ def get_bootstrap_data(authenticated: bool) -> dict[str, Any]:
         "settings": settings,
         "links": links,
         "directory_links": directory_links,
+        "directory_categories": directory_categories,
         "tasks": tasks,
         "papers": papers,
         "calendar_events": calendar_events,
@@ -659,6 +672,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         match = re.fullmatch(r"/api/(links|directory-links|tasks|papers|calendar-events)", path)
         if match:
             self.create_record(match.group(1).replace("-", "_"), data)
+            return
+
+        if path == "/api/directory-categories":
+            self.create_directory_category(data)
             return
 
         if path == "/api/focus-sessions":
@@ -761,6 +778,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             )
             record_id = cursor.lastrowid
             row = db.execute(f"SELECT * FROM {table} WHERE id = ?", (record_id,)).fetchone()
+            if table == "directory_links":
+                db.execute("INSERT OR IGNORE INTO directory_categories (name) VALUES (?)", (values["category"],))
         self.send_json(row_to_dict(row), status=HTTPStatus.CREATED)
 
     def update_record(self, table: str, record_id: int, data: dict[str, Any]) -> None:
@@ -780,7 +799,26 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 self.send_error_json(HTTPStatus.NOT_FOUND, "记录不存在")
                 return
             row = db.execute(f"SELECT * FROM {table} WHERE id = ?", (record_id,)).fetchone()
+            if table == "directory_links":
+                db.execute("INSERT OR IGNORE INTO directory_categories (name) VALUES (?)", (values["category"],))
         self.send_json(row_to_dict(row))
+
+    def create_directory_category(self, data: dict[str, Any]) -> None:
+        try:
+            if not isinstance(data.get("name"), str):
+                raise ValueError("分类名称必须是文本")
+            name = clean_text(data["name"], "分类名称", 30, True)
+            if name == "全部":
+                raise ValueError("“全部”用于显示所有站点，请使用其他分类名称")
+        except ValueError as error:
+            self.send_error_json(HTTPStatus.BAD_REQUEST, str(error))
+            return
+        with DB_LOCK, db_connect() as db:
+            cursor = db.execute("INSERT OR IGNORE INTO directory_categories (name) VALUES (?)", (name,))
+            if cursor.rowcount == 0:
+                self.send_error_json(HTTPStatus.CONFLICT, "该分类已存在")
+                return
+        self.send_json({"name": name}, status=HTTPStatus.CREATED)
 
     def create_focus_session(self, data: dict[str, Any]) -> None:
         try:
