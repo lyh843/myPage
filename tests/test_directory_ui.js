@@ -35,7 +35,9 @@ html = fields("directoryLinks", { category: "Existing" });
 assert.match(html, /<option value="Existing" selected>/);
 assert.doesNotMatch(html, /<option value="Empty" selected>/);
 assert.match(fields("directoryCategories"), /name="name" maxlength="30" required/);
-assert.match(fields("links"), /<input name="category"/);
+assert.equal(fields("links"), "");
+assert.equal(fields("papers"), "");
+assert.doesNotMatch(fields("settings"), /focus_target/);
 assert.equal(evaluate('endpointForKind("directoryCategories")'), "directory-categories");
 
 evaluate("renderDirectory()");

@@ -6,7 +6,6 @@ services:
     environment:
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env}
       APP_SECRET: ${APP_SECRET:?Set APP_SECRET in .env}
-      PUBLIC_READ: ${PUBLIC_READ:-true}
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
     ports:
       - "127.0.0.1:8765:8765"

@@ -1,4 +1,5 @@
 __pycache__/
+.venv/
 *.py[cod]
 .env
 data/
@@ -6,4 +7,3 @@ data/
 *.db-shm
 *.db-wal
 .DS_Store
-

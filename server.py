@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Single-user research dashboard server with no third-party dependencies."""
+"""Single-user, server-hosted schedule and research dashboard."""
 
 from __future__ import annotations
 
@@ -20,7 +20,10 @@ from http.cookies import SimpleCookie
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
+
+import research
+import schedule
 
 
 ROOT = Path(__file__).resolve().parent
@@ -31,22 +34,21 @@ HOST = os.environ.get("HOST", "127.0.0.1")
 PORT = int(os.environ.get("PORT", "8765"))
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "change-me")
 APP_SECRET = os.environ.get("APP_SECRET") or secrets.token_hex(32)
-PUBLIC_READ = os.environ.get("PUBLIC_READ", "true").lower() in {"1", "true", "yes", "on"}
 SESSION_TTL = 60 * 60 * 24 * 14
 MAX_BODY_SIZE = 512 * 1024
 
 DB_LOCK = threading.RLock()
 LOGIN_ATTEMPTS: dict[str, list[float]] = {}
 
-ALLOWED_TABLES = {"links", "directory_links", "tasks", "papers", "calendar_events"}
-ALLOWED_STATUS = {
-    "tasks": {"todo", "doing", "done"},
-    "papers": {"queue", "reading", "done"},
-}
+TASK_STATUSES = {"todo", "doing", "done"}
 
 
 def utc_now() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    return schedule.stamp()
+
+
+def local_now() -> datetime:
+    return datetime.now(timezone(timedelta(hours=8))).replace(tzinfo=None)
 
 
 def db_connect() -> sqlite3.Connection:
@@ -65,19 +67,6 @@ def init_database() -> None:
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS links (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT NOT NULL,
-                url TEXT NOT NULL,
-                category TEXT NOT NULL DEFAULT '工具',
-                note TEXT NOT NULL DEFAULT '',
-                icon TEXT NOT NULL DEFAULT 'link',
-                color TEXT NOT NULL DEFAULT 'blue',
-                position INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS directory_links (
@@ -109,27 +98,6 @@ def init_database() -> None:
                 notes TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS papers (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT NOT NULL,
-                authors TEXT NOT NULL DEFAULT '',
-                venue TEXT NOT NULL DEFAULT '',
-                year INTEGER,
-                url TEXT NOT NULL DEFAULT '',
-                status TEXT NOT NULL DEFAULT 'queue',
-                tags TEXT NOT NULL DEFAULT '[]',
-                notes TEXT NOT NULL DEFAULT '',
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS focus_sessions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                duration INTEGER NOT NULL,
-                label TEXT NOT NULL DEFAULT '',
-                completed_at TEXT NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS calendar_events (
@@ -176,34 +144,20 @@ def init_database() -> None:
             """INSERT OR IGNORE INTO directory_categories (name)
             SELECT category FROM directory_links WHERE category != '' ORDER BY position, id"""
         )
+        schedule.init_schema(db)
+        research.init_schema(db)
 
 
 def seed_database(db: sqlite3.Connection) -> None:
     now = utc_now()
     settings = {
         "display_name": "LYH",
-        "role": "AI learner · Undergraduate",
-        "bio": "把论文、代码和课程任务放在同一条研究节奏里。",
-        "focus_target": "600",
+        "role": "个人日程",
+        "bio": "日常待办与日程安排。",
         "github": "https://github.com/lyh843",
     }
     db.executemany(
         "INSERT INTO settings (key, value) VALUES (?, ?)", settings.items()
-    )
-
-    links = [
-        ("Google Scholar", "https://scholar.google.com", "检索", "追踪论文与引用", "graduation-cap", "blue", 1),
-        ("arXiv", "https://arxiv.org", "论文", "AI 预印本", "file-text", "red", 2),
-        ("Papers with Code", "https://paperswithcode.com", "复现", "论文、代码与榜单", "code-2", "yellow", 3),
-        ("Hugging Face", "https://huggingface.co", "模型", "模型与数据集", "boxes", "blue", 4),
-        ("GitHub", "https://github.com", "开发", "代码仓库", "github", "dark", 5),
-        ("Overleaf", "https://www.overleaf.com", "写作", "LaTeX 协作", "sigma", "green", 6),
-    ]
-    db.executemany(
-        """INSERT INTO links
-        (title, url, category, note, icon, color, position, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        [(*item, now, now) for item in links],
     )
 
     today = date.today()
@@ -218,18 +172,6 @@ def seed_database(db: sqlite3.Connection) -> None:
         (title, course, due_date, priority, status, notes, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
         [(*item, now, now) for item in tasks],
-    )
-
-    papers = [
-        ("Attention Is All You Need", "Vaswani et al.", "NeurIPS", 2017, "https://arxiv.org/abs/1706.03762", "done", '["Transformer", "NLP"]', "关注多头注意力的投影维度"),
-        ("Denoising Diffusion Probabilistic Models", "Ho et al.", "NeurIPS", 2020, "https://arxiv.org/abs/2006.11239", "reading", '["Diffusion", "Generative"]', "梳理前向过程与 ELBO"),
-        ("LoRA: Low-Rank Adaptation of Large Language Models", "Hu et al.", "ICLR", 2022, "https://arxiv.org/abs/2106.09685", "queue", '["LLM", "PEFT"]', "尝试在课程项目中复现"),
-    ]
-    db.executemany(
-        """INSERT INTO papers
-        (title, authors, venue, year, url, status, tags, notes, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        [(*item, now, now) for item in papers],
     )
 
 
@@ -370,16 +312,6 @@ def seed_directory_links(db: sqlite3.Connection) -> None:
     )
 
 
-def row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
-    value = dict(row)
-    if "tags" in value:
-        try:
-            value["tags"] = json.loads(value["tags"])
-        except json.JSONDecodeError:
-            value["tags"] = []
-    return value
-
-
 def encode_token(payload: dict[str, Any]) -> str:
     raw = json.dumps(payload, separators=(",", ":")).encode()
     body = base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
@@ -433,7 +365,11 @@ def clean_local_datetime(value: Any, field: str) -> tuple[str, datetime | None]:
 
 
 def validate_payload(table: str, data: dict[str, Any]) -> dict[str, Any]:
-    if table in {"links", "directory_links"}:
+    if table == "inbox":
+        return {"title": clean_text(data.get("title"), "收集内容", 1000, True)}
+    if table == "research_items":
+        return {"favorite": int(bool(data.get("favorite")))}
+    if table == "directory_links":
         color = clean_text(data.get("color", "blue"), "颜色", 20)
         if color not in {"blue", "red", "yellow", "green", "dark"}:
             color = "blue"
@@ -451,12 +387,21 @@ def validate_payload(table: str, data: dict[str, Any]) -> dict[str, Any]:
         due_date = clean_text(data.get("due_date"), "截止日期", 10)
         start_at, start_time = clean_local_datetime(data.get("start_at"), "起始时间")
         end_at, end_time = clean_local_datetime(data.get("end_at"), "终止时间")
-        if status not in ALLOWED_STATUS[table]:
+        if status not in TASK_STATUSES:
             raise ValueError("任务状态无效")
         if priority not in {"low", "medium", "high"}:
             raise ValueError("任务优先级无效")
-        if due_date and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", due_date):
-            raise ValueError("截止日期格式无效")
+        if due_date:
+            try:
+                datetime.strptime(due_date, "%Y-%m-%d")
+            except ValueError:
+                raise ValueError("截止日期格式无效") from None
+        deadline_at, _ = clean_local_datetime(data.get("deadline_at"), "截止时间")
+        if not deadline_at and end_at and not start_at and not due_date:
+            deadline_at = end_at
+        repeat = schedule.repeat_fields(data, deadline_at or due_date)
+        if repeat["repeat_rule"] != "none" and not (deadline_at or due_date):
+            raise ValueError("重复任务需要截止日期或时间")
         if start_time and not end_time:
             raise ValueError("设置起始时间后还需要设置终止时间")
         if start_time and end_time and end_time <= start_time:
@@ -470,31 +415,8 @@ def validate_payload(table: str, data: dict[str, Any]) -> dict[str, Any]:
             "priority": priority,
             "status": status,
             "notes": clean_text(data.get("notes"), "备注", 1200),
-        }
-    if table == "papers":
-        status = clean_text(data.get("status", "queue"), "状态", 20)
-        if status not in ALLOWED_STATUS[table]:
-            raise ValueError("论文状态无效")
-        year = data.get("year")
-        if year in {None, ""}:
-            parsed_year = None
-        else:
-            parsed_year = int(year)
-            if parsed_year < 1900 or parsed_year > date.today().year + 2:
-                raise ValueError("年份无效")
-        tags = data.get("tags", [])
-        if isinstance(tags, str):
-            tags = [part.strip() for part in tags.split(",") if part.strip()]
-        tags = [clean_text(tag, "标签", 30) for tag in tags[:8]]
-        return {
-            "title": clean_text(data.get("title"), "论文标题", 300, True),
-            "authors": clean_text(data.get("authors"), "作者", 220),
-            "venue": clean_text(data.get("venue"), "会议或期刊", 80),
-            "year": parsed_year,
-            "url": clean_url(data.get("url"), "论文链接"),
-            "status": status,
-            "tags": json.dumps(tags, ensure_ascii=False),
-            "notes": clean_text(data.get("notes"), "阅读笔记", 4000),
+            "deadline_at": deadline_at,
+            **repeat,
         }
     if table == "calendar_events":
         start_at = clean_text(data.get("start_at"), "开始时间", 16, True)
@@ -537,6 +459,9 @@ def validate_payload(table: str, data: dict[str, Any]) -> dict[str, Any]:
             "color": color,
             "repeat_rule": repeat_rule,
             "repeat_until": repeat_until,
+            **schedule.repeat_fields(data, start_at),
+            "task_id": schedule.integer(data["task_id"], 1, 2147483647, "关联任务") if data.get("task_id") else None,
+            "reminder_minutes": schedule.integer(data.get("reminder_minutes", 15), -1, 1440, "提醒提前分钟数"),
         }
     raise ValueError("未知的数据类型")
 
@@ -545,49 +470,53 @@ def get_bootstrap_data(authenticated: bool) -> dict[str, Any]:
     with DB_LOCK, db_connect() as db:
         settings = {
             row["key"]: row["value"]
-            for row in db.execute("SELECT key, value FROM settings")
+            for row in db.execute(
+                "SELECT key, value FROM settings WHERE key IN ('display_name', 'role', 'bio', 'github')"
+            )
         }
-        can_read = authenticated or PUBLIC_READ
+        can_read = authenticated
+        if not can_read:
+            settings = {}
         if can_read:
-            links = [row_to_dict(row) for row in db.execute("SELECT * FROM links ORDER BY position, id")]
-            directory_links = [row_to_dict(row) for row in db.execute("SELECT * FROM directory_links ORDER BY position, id")]
+            directory_links = [dict(row) for row in db.execute("SELECT * FROM directory_links ORDER BY position, id")]
             directory_categories = [
                 row["name"] for row in db.execute("SELECT name FROM directory_categories ORDER BY rowid")
             ]
-            tasks = [row_to_dict(row) for row in db.execute("SELECT * FROM tasks ORDER BY status, due_date, id")]
-            papers = [row_to_dict(row) for row in db.execute("SELECT * FROM papers ORDER BY updated_at DESC, id DESC")]
+            tasks = [dict(row) for row in db.execute("SELECT * FROM tasks ORDER BY status, due_date, id")]
             calendar_events = [
-                row_to_dict(row)
+                dict(row)
                 for row in db.execute("SELECT * FROM calendar_events ORDER BY start_at, id")
             ]
-            since = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
-            focus_minutes = db.execute(
-                "SELECT COALESCE(SUM(duration), 0) FROM focus_sessions WHERE completed_at >= ?",
-                (since,),
-            ).fetchone()[0]
         else:
-            links, directory_links, tasks, papers, calendar_events, focus_minutes = [], [], [], [], [], 0
+            directory_links, tasks, calendar_events = [], [], []
             directory_categories = []
+        extra = {}
+        if authenticated:
+            now = local_now()
+            extra = {
+                "inbox": [dict(row) for row in db.execute("SELECT * FROM inbox ORDER BY id DESC")],
+                "occurrences": schedule.expand_events(db, now - timedelta(days=7), now + timedelta(days=90)),
+                "reminders": schedule.reminders(db, now),
+                "history": schedule.history_items(db),
+                "research_items": research.list_items(db),
+                "llm_settings": research.settings(db),
+                "feed_refreshing": research.REFRESH_LOCK.locked(),
+            }
 
-    focus_target = int(settings.get("focus_target", "600") or 600)
     stats = {
         "open_tasks": sum(task["status"] != "done" for task in tasks),
-        "reading_papers": sum(paper["status"] == "reading" for paper in papers),
-        "focus_minutes": focus_minutes,
-        "focus_target": focus_target,
         "directory_links": len(directory_links),
     }
     return {
         "authenticated": authenticated,
-        "public_read": PUBLIC_READ,
+        "public_read": False,
         "settings": settings,
-        "links": links,
         "directory_links": directory_links,
         "directory_categories": directory_categories,
         "tasks": tasks,
-        "papers": papers,
         "calendar_events": calendar_events,
         "stats": stats,
+        **extra,
     }
 
 
@@ -607,9 +536,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         self.send_header(
             "Content-Security-Policy",
             "default-src 'self'; script-src 'self' https://unpkg.com; "
-            "style-src 'self'; style-src-attr 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline'; style-src-attr 'unsafe-inline'; "
             "img-src 'self' data: https://github.com https://avatars.githubusercontent.com; "
-            "connect-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+            "connect-src 'self'; font-src 'self' data:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
         )
         super().end_headers()
 
@@ -621,6 +550,20 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             payload["csrf_token"] = csrf if authenticated else ""
             self.send_json(payload)
             return
+        if path == "/api/calendar":
+            authenticated, _ = self.auth_context()
+            if not authenticated:
+                self.send_error_json(HTTPStatus.UNAUTHORIZED, "请先登录")
+                return
+            try:
+                params = parse_qs(urlparse(self.path).query)
+                start = datetime.strptime(params.get("start", [""])[0], "%Y-%m-%dT%H:%M")
+                end = datetime.strptime(params.get("end", [""])[0], "%Y-%m-%dT%H:%M")
+                with DB_LOCK, db_connect() as db:
+                    self.send_json(schedule.expand_events(db, start, end))
+            except ValueError as error:
+                self.send_error_json(HTTPStatus.BAD_REQUEST, str(error))
+            return
         if path == "/api/export":
             authenticated, _ = self.auth_context()
             if not authenticated:
@@ -629,6 +572,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             data = get_bootstrap_data(True)
             data.pop("authenticated", None)
             data.pop("public_read", None)
+            for key in ("llm_settings", "feed_refreshing", "occurrences", "reminders", "history"):
+                data.pop(key, None)
+            with DB_LOCK, db_connect() as db:
+                data["research_items"] = [dict(row) for row in db.execute("SELECT * FROM research_items")]
+                data["event_exceptions"] = [dict(row) for row in db.execute("SELECT * FROM event_exceptions")]
+                data["reminder_states"] = [dict(row) for row in db.execute("SELECT * FROM reminder_states")]
             data["exported_at"] = utc_now()
             body = json.dumps(data, ensure_ascii=False, indent=2).encode()
             filename = f"research-desk-{date.today().isoformat()}.json"
@@ -668,18 +617,16 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 cookie="research_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0",
             )
             return
+        if self.feature_action(path, data):
+            return
 
-        match = re.fullmatch(r"/api/(links|directory-links|tasks|papers|calendar-events)", path)
+        match = re.fullmatch(r"/api/(directory-links|tasks|calendar-events|inbox)", path)
         if match:
             self.create_record(match.group(1).replace("-", "_"), data)
             return
 
         if path == "/api/directory-categories":
             self.create_directory_category(data)
-            return
-
-        if path == "/api/focus-sessions":
-            self.create_focus_session(data)
             return
 
         if path == "/api/settings":
@@ -698,7 +645,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         authenticated, csrf = self.auth_context()
         if not self.require_write_auth(authenticated, csrf):
             return
-        match = re.fullmatch(r"/api/(links|directory-links|tasks|papers|calendar-events)/(\d+)", path)
+        match = re.fullmatch(r"/api/(directory-links|tasks|calendar-events|inbox|research-items)/(\d+)", path)
         if not match:
             self.send_error_json(HTTPStatus.NOT_FOUND, "接口不存在")
             return
@@ -709,17 +656,80 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         authenticated, csrf = self.auth_context()
         if not self.require_write_auth(authenticated, csrf):
             return
-        match = re.fullmatch(r"/api/(links|directory-links|tasks|papers|calendar-events)/(\d+)", path)
+        match = re.fullmatch(r"/api/(directory-links|tasks|calendar-events|inbox|research-items)/(\d+)", path)
         if not match:
             self.send_error_json(HTTPStatus.NOT_FOUND, "接口不存在")
             return
         table, record_id = match.group(1).replace("-", "_"), int(match.group(2))
-        with DB_LOCK, db_connect() as db:
-            cursor = db.execute(f"DELETE FROM {table} WHERE id = ?", (record_id,))
-            if cursor.rowcount == 0:
-                self.send_error_json(HTTPStatus.NOT_FOUND, "记录不存在")
-                return
-        self.send_json({"ok": True})
+        try:
+            data = self.read_json()
+            with DB_LOCK, db_connect() as db:
+                before = schedule.snapshot(db, table, record_id)
+                if before is None:
+                    self.send_error_json(HTTPStatus.NOT_FOUND, "记录不存在")
+                    return
+                schedule.check_version(before, data)
+                changes = []
+                if table == "tasks":
+                    for event in db.execute("SELECT id FROM calendar_events WHERE task_id=?", (record_id,)).fetchall():
+                        old = schedule.snapshot(db, "calendar_events", event["id"])
+                        db.execute("DELETE FROM calendar_events WHERE id=?", (event["id"],))
+                        changes.append(schedule.change(db, "calendar_events", old, event["id"]))
+                db.execute(f"DELETE FROM {table} WHERE id=?", (record_id,))
+                changes.insert(0, schedule.change(db, table, before, record_id))
+                history_id = schedule.record_change(db, "删除：" + before.get("title", ""), changes)
+            self.send_json({"ok": True, "history_id": history_id})
+        except (ValueError, sqlite3.IntegrityError) as error:
+            self.feature_error(error)
+
+    def feature_error(self, error) -> None:
+        status = HTTPStatus.CONFLICT if isinstance(error, (schedule.Conflict, sqlite3.IntegrityError)) else HTTPStatus.BAD_REQUEST
+        message = "记录存在关联或已经改变，请刷新后重试" if isinstance(error, sqlite3.IntegrityError) else str(error)
+        self.send_error_json(status, message)
+
+    def feature_action(self, path, data) -> bool:
+        undo = re.fullmatch(r"/api/history/(\d+)/undo", path)
+        occurrence = re.fullmatch(r"/api/calendar-events/(\d+)/occurrence", path)
+        summarize = re.fullmatch(r"/api/research/(\d+)/summarize", path)
+        if path not in {"/api/reminders/state", "/api/llm-settings", "/api/research/refresh",
+                        "/api/research/inspect"} and not (undo or occurrence or summarize):
+            return False
+        try:
+            if path == "/api/research/refresh":
+                threading.Thread(target=research.refresh_feed, args=(db_connect, True), daemon=True).start()
+                self.send_json({"ok": True, "refreshing": True}, HTTPStatus.ACCEPTED)
+                return True
+            if path == "/api/research/inspect":
+                item = research.extract_link(clean_text(data.get("url"), "链接", 2000, True))
+                with DB_LOCK, db_connect() as db:
+                    result = research.save_link(db, item)
+                result.pop("content", None)
+                self.send_json(result)
+                return True
+            if summarize:
+                self.send_json(research.summarize(db_connect, int(summarize.group(1)), data.get("consent")))
+                return True
+            with DB_LOCK, db_connect() as db:
+                result = {"ok": True}
+                if undo:
+                    schedule.undo(db, int(undo.group(1)))
+                elif occurrence:
+                    if not isinstance(data.get("event", {}), dict):
+                        raise ValueError("日程格式无效")
+                    result["history_id"] = schedule.edit_occurrence(
+                        db, int(occurrence.group(1)), data, validate_payload)
+                elif path == "/api/reminders/state":
+                    key = clean_text(data.get("key"), "提醒标识", 250, True)
+                    snoozed = (local_now() + timedelta(minutes=10)).isoformat(timespec="minutes") if data.get("snooze") else ""
+                    db.execute("""INSERT INTO reminder_states VALUES (?, ?, ?)
+                        ON CONFLICT(key) DO UPDATE SET dismissed=excluded.dismissed,snoozed_until=excluded.snoozed_until""",
+                               (key, int(not bool(data.get("snooze"))), snoozed))
+                elif path == "/api/llm-settings":
+                    result = research.save_settings(db, data)
+            self.send_json(result)
+        except (ValueError, TypeError, sqlite3.IntegrityError) as error:
+            self.feature_error(error)
+        return True
 
     def handle_login(self, data: dict[str, Any]) -> None:
         client = self.client_address[0]
@@ -737,13 +747,18 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         LOGIN_ATTEMPTS.pop(client, None)
         csrf = secrets.token_urlsafe(24)
         token = encode_token({"exp": int(now) + SESSION_TTL, "csrf": csrf})
-        cookie = f"research_session={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={SESSION_TTL}"
+        cookie = f"research_session={token}; Path=/; HttpOnly; SameSite=Strict"
+        if data.get("remember", True):
+            cookie += f"; Max-Age={SESSION_TTL}"
         if os.environ.get("COOKIE_SECURE", "false").lower() in {"1", "true", "yes", "on"}:
             cookie += "; Secure"
         self.send_json({"ok": True, "csrf_token": csrf}, cookie=cookie)
 
     def auth_context(self) -> tuple[bool, str]:
-        cookie = SimpleCookie(self.headers.get("Cookie", ""))
+        try:
+            cookie = SimpleCookie(self.headers.get("Cookie", ""))
+        except Exception:
+            return False, ""
         morsel = cookie.get("research_session")
         if not morsel:
             return False, ""
@@ -771,16 +786,25 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         columns = list(values) + ["created_at", "updated_at"]
         params = list(values.values()) + [now, now]
         placeholders = ", ".join("?" for _ in columns)
-        with DB_LOCK, db_connect() as db:
-            cursor = db.execute(
-                f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({placeholders})",
-                params,
-            )
-            record_id = cursor.lastrowid
-            row = db.execute(f"SELECT * FROM {table} WHERE id = ?", (record_id,)).fetchone()
-            if table == "directory_links":
-                db.execute("INSERT OR IGNORE INTO directory_categories (name) VALUES (?)", (values["category"],))
-        self.send_json(row_to_dict(row), status=HTTPStatus.CREATED)
+        try:
+            with DB_LOCK, db_connect() as db:
+                inbox = schedule.snapshot(db, "inbox", data["_inbox_id"]) if data.get("_inbox_id") else None
+                if data.get("_inbox_id"):
+                    schedule.check_version(inbox, {"_version": data.get("_inbox_version")})
+                cursor = db.execute(
+                    f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({placeholders})", params)
+                record_id = cursor.lastrowid
+                row = db.execute(f"SELECT * FROM {table} WHERE id = ?", (record_id,)).fetchone()
+                if table == "directory_links":
+                    db.execute("INSERT OR IGNORE INTO directory_categories (name) VALUES (?)", (values["category"],))
+                changes = [schedule.change(db, table, None, record_id)]
+                if inbox:
+                    db.execute("DELETE FROM inbox WHERE id=?", (inbox["id"],))
+                    changes.append(schedule.change(db, "inbox", inbox, inbox["id"]))
+                history_id = schedule.record_change(db, "添加：" + values.get("title", ""), changes)
+            self.send_json({**dict(row), "_history_id": history_id}, status=HTTPStatus.CREATED)
+        except (ValueError, sqlite3.IntegrityError) as error:
+            self.feature_error(error)
 
     def update_record(self, table: str, record_id: int, data: dict[str, Any]) -> None:
         try:
@@ -789,19 +813,36 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.send_error_json(HTTPStatus.BAD_REQUEST, str(error))
             return
         values["updated_at"] = utc_now()
-        assignments = ", ".join(f"{key} = ?" for key in values)
-        with DB_LOCK, db_connect() as db:
-            cursor = db.execute(
-                f"UPDATE {table} SET {assignments} WHERE id = ?",
-                [*values.values(), record_id],
-            )
-            if cursor.rowcount == 0:
-                self.send_error_json(HTTPStatus.NOT_FOUND, "记录不存在")
-                return
-            row = db.execute(f"SELECT * FROM {table} WHERE id = ?", (record_id,)).fetchone()
-            if table == "directory_links":
-                db.execute("INSERT OR IGNORE INTO directory_categories (name) VALUES (?)", (values["category"],))
-        self.send_json(row_to_dict(row))
+        try:
+            with DB_LOCK, db_connect() as db:
+                before = schedule.snapshot(db, table, record_id)
+                if before is None:
+                    self.send_error_json(HTTPStatus.NOT_FOUND, "记录不存在")
+                    return
+                schedule.check_version(before, data)
+                if table == "tasks" and before["repeat_rule"] != "none" and before["status"] != "done":
+                    if data.get("_scope") == "one":
+                        template = {key: before[key] for key in values if key != "updated_at"}
+                        values["repeat_template"] = before["repeat_template"] or json.dumps(template, ensure_ascii=False)
+                    elif "_scope" in data:
+                        values["repeat_template"] = ""
+                    else:
+                        values["repeat_template"] = before["repeat_template"]
+                if table == "tasks" and data.get("_skip") and values["repeat_rule"] != "none":
+                    values["skipped"] = 1
+                assignments = ", ".join(f"{key} = ?" for key in values)
+                db.execute(f"UPDATE {table} SET {assignments} WHERE id=?", [*values.values(), record_id])
+                changes = []
+                if table == "tasks":
+                    changes.extend(schedule.complete_repeating_task(db, before, values))
+                changes.insert(0, schedule.change(db, table, before, record_id))
+                row = db.execute(f"SELECT * FROM {table} WHERE id=?", (record_id,)).fetchone()
+                if table == "directory_links":
+                    db.execute("INSERT OR IGNORE INTO directory_categories (name) VALUES (?)", (values["category"],))
+                history_id = schedule.record_change(db, "修改：" + before.get("title", ""), changes)
+            self.send_json({**dict(row), "_history_id": history_id})
+        except (ValueError, sqlite3.IntegrityError) as error:
+            self.feature_error(error)
 
     def create_directory_category(self, data: dict[str, Any]) -> None:
         try:
@@ -820,29 +861,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return
         self.send_json({"name": name}, status=HTTPStatus.CREATED)
 
-    def create_focus_session(self, data: dict[str, Any]) -> None:
-        try:
-            duration = int(data.get("duration", 0))
-            if duration < 1 or duration > 240:
-                raise ValueError("专注时长应在 1 到 240 分钟之间")
-            label = clean_text(data.get("label"), "专注内容", 120)
-        except (ValueError, TypeError) as error:
-            self.send_error_json(HTTPStatus.BAD_REQUEST, str(error))
-            return
-        with DB_LOCK, db_connect() as db:
-            cursor = db.execute(
-                "INSERT INTO focus_sessions (duration, label, completed_at) VALUES (?, ?, ?)",
-                (duration, label, utc_now()),
-            )
-        self.send_json({"id": cursor.lastrowid, "duration": duration}, status=HTTPStatus.CREATED)
-
     def update_settings(self, data: dict[str, Any]) -> None:
         try:
             values = {
                 "display_name": clean_text(data.get("display_name"), "称呼", 40, True),
                 "role": clean_text(data.get("role"), "身份", 80),
                 "bio": clean_text(data.get("bio"), "简介", 180),
-                "focus_target": str(max(30, min(5000, int(data.get("focus_target", 600))))),
                 "github": clean_url(data.get("github"), "GitHub 地址"),
             }
         except (ValueError, TypeError) as error:
@@ -900,12 +924,16 @@ def main() -> None:
     if "APP_SECRET" not in os.environ:
         print("NOTICE: APP_SECRET is temporary; sessions will reset after a restart.")
     server = ThreadingHTTPServer((HOST, PORT), DashboardHandler)
+    stop = threading.Event()
+    if os.environ.get("RESEARCH_AUTO_FETCH", "true").lower() == "true":
+        threading.Thread(target=research.feed_worker, args=(db_connect, stop), daemon=True).start()
     print(f"Research Desk running at http://{HOST}:{PORT}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nStopping server.")
     finally:
+        stop.set()
         server.server_close()
 
 

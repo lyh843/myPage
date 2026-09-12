@@ -7,10 +7,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     DATA_DIR=/app/data
 
 WORKDIR /app
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 RUN addgroup -S research && adduser -S research -G research \
     && mkdir -p /app/data && chown -R research:research /app
 
 COPY --chown=research:research server.py /app/server.py
+COPY --chown=research:research schedule.py research.py /app/
 COPY --chown=research:research static /app/static
 
 USER research
@@ -20,4 +23,3 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD wget -q -O /dev/null http://127.0.0.1:8765/api/bootstrap || exit 1
 
 CMD ["python", "server.py"]
-

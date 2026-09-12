@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""End-to-end smoke test for the zero-dependency dashboard server."""
+"""End-to-end regression test for retained dashboard APIs and legacy data."""
 
 from __future__ import annotations
 
@@ -61,6 +61,7 @@ def main() -> None:
             "ADMIN_PASSWORD": PASSWORD,
             "APP_SECRET": "integration-secret-that-is-long-and-stable",
             "PUBLIC_READ": "true",
+            "COOKIE_SECURE": "false",
         }
         process = subprocess.Popen(
             [sys.executable, str(ROOT / "server.py")],
@@ -72,9 +73,12 @@ def main() -> None:
         )
         try:
             wait_until_ready(base)
+            visitor = request_json(opener, f"{base}/api/bootstrap")
+            assert visitor["authenticated"] is False and visitor["public_read"] is False
+            assert visitor["settings"] == {} and visitor["tasks"] == []
+            request_json(opener, f"{base}/api/login", method="POST", payload={"password": PASSWORD})
             bootstrap = request_json(opener, f"{base}/api/bootstrap")
-            assert bootstrap["authenticated"] is False
-            assert len(bootstrap["links"]) == 6
+            assert bootstrap["authenticated"] is True
             assert len(bootstrap["directory_links"]) == 98
             assert bootstrap["stats"]["directory_links"] == 98
             assert bootstrap["directory_categories"] == list(
@@ -82,8 +86,18 @@ def main() -> None:
             )
             assert len(bootstrap["tasks"]) == 4
             assert all("start_at" in item and "end_at" in item for item in bootstrap["tasks"])
-            assert len(bootstrap["papers"]) == 3
             assert bootstrap["calendar_events"] == []
+            assert not {"links", "papers", "focus_sessions"} & bootstrap.keys()
+            assert not {"focus_minutes", "focus_target", "reading_papers"} & bootstrap["stats"].keys()
+            assert "focus_target" not in bootstrap["settings"]
+            with sqlite3.connect(Path(data_dir) / "workspace.db") as db:
+                tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+                assert not {"links", "papers", "focus_sessions"} & tables
+                for table in ("links", "papers", "focus_sessions"):
+                    db.execute(f"CREATE TABLE {table} (id INTEGER PRIMARY KEY, title TEXT)")
+                    db.execute(f"INSERT INTO {table} VALUES (1, 'Legacy data')")
+                db.execute("INSERT INTO settings VALUES ('focus_target', 'legacy-invalid-value')")
+            cookie_jar.clear()
 
             expect_status(
                 opener,
@@ -113,6 +127,17 @@ def main() -> None:
                 payload={"password": PASSWORD},
             )
             csrf = login["csrf_token"]
+            for endpoint in ("links", "papers", "focus-sessions"):
+                for method in ("GET", "POST", "PUT", "DELETE"):
+                    suffix = "/1" if method in {"PUT", "DELETE"} else ""
+                    expect_status(
+                        opener,
+                        f"{base}/api/{endpoint}{suffix}",
+                        404,
+                        method=method,
+                        payload={},
+                        csrf=csrf,
+                    )
             expect_status(
                 opener,
                 f"{base}/api/directory-categories",
@@ -159,31 +184,6 @@ def main() -> None:
                 method="POST",
                 payload={"title": "Missing CSRF"},
             )
-
-            link = request_json(
-                opener,
-                f"{base}/api/links",
-                method="POST",
-                payload={
-                    "title": "Test Resource",
-                    "url": "https://example.com/resource",
-                    "category": "测试",
-                    "note": "Created by integration test",
-                    "icon": "link",
-                    "color": "blue",
-                },
-                csrf=csrf,
-            )
-            assert link["id"] > 0
-            link["title"] = "Updated Resource"
-            updated_link = request_json(
-                opener,
-                f"{base}/api/links/{link['id']}",
-                method="PUT",
-                payload=link,
-                csrf=csrf,
-            )
-            assert updated_link["title"] == "Updated Resource"
 
             directory_link = request_json(
                 opener,
@@ -277,24 +277,6 @@ def main() -> None:
                 csrf=csrf,
             )
 
-            paper = request_json(
-                opener,
-                f"{base}/api/papers",
-                method="POST",
-                payload={
-                    "title": "Integration Paper",
-                    "authors": "Test et al.",
-                    "venue": "CI",
-                    "year": 2026,
-                    "url": "https://example.com/paper",
-                    "status": "reading",
-                    "tags": ["Test", "API"],
-                    "notes": "Smoke test",
-                },
-                csrf=csrf,
-            )
-            assert paper["tags"] == ["Test", "API"]
-
             calendar_event = request_json(
                 opener,
                 f"{base}/api/calendar-events",
@@ -325,27 +307,24 @@ def main() -> None:
             )
             assert updated_calendar_event["location"] == "Lab 202"
 
-            focus = request_json(
+            settings = request_json(
                 opener,
-                f"{base}/api/focus-sessions",
+                f"{base}/api/settings",
                 method="POST",
-                payload={"duration": 25, "label": "Integration"},
+                payload={**bootstrap["settings"], "display_name": "Schedule test", "focus_target": 25},
                 csrf=csrf,
             )
-            assert focus["duration"] == 25
+            assert settings["display_name"] == "Schedule test"
+            assert "focus_target" not in settings
 
             exported = request_json(opener, f"{base}/api/export")
-            assert exported["stats"]["focus_minutes"] == 25
-            assert any(item["id"] == paper["id"] for item in exported["papers"])
+            assert not {"links", "papers", "focus_sessions"} & exported.keys()
+            assert not {"focus_minutes", "focus_target", "reading_papers"} & exported["stats"].keys()
+            assert "focus_target" not in exported["settings"]
+            assert any(item["id"] == task["id"] for item in exported["tasks"])
             assert any(item["id"] == calendar_event["id"] for item in exported["calendar_events"])
             assert category["name"] in exported["directory_categories"]
 
-            request_json(
-                opener,
-                f"{base}/api/links/{link['id']}",
-                method="DELETE",
-                csrf=csrf,
-            )
             request_json(
                 opener,
                 f"{base}/api/directory-links/{directory_link['id']}",
@@ -360,7 +339,6 @@ def main() -> None:
             )
             final = request_json(opener, f"{base}/api/bootstrap")
             assert final["authenticated"] is True
-            assert not any(item["id"] == link["id"] for item in final["links"])
             assert len(final["directory_links"]) == 98
             assert category["name"] in final["directory_categories"]
             assert "API category" in final["directory_categories"]
@@ -369,10 +347,38 @@ def main() -> None:
                 html = response.read().decode()
                 assert "Research Desk" in html
                 assert 'id="overview-calendar-list"' in html
+                assert 'id="due-today-count"' in html
+                assert 'id="overdue-count"' in html
+                for retired in ("links", "papers", "focus"):
+                    assert f'data-view="{retired}"' not in html
+                    assert f'data-route="{retired}"' not in html
                 assert "Content-Security-Policy" in response.headers
                 assert "style-src-attr 'unsafe-inline'" in response.headers["Content-Security-Policy"]
 
-            print("PASS: static files, auth, CSRF, CRUD, directory categories, task scheduling, calendar, focus tracking and export")
+            process.terminate()
+            process.wait(timeout=5)
+            env["PUBLIC_READ"] = "false"
+            process = subprocess.Popen(
+                [sys.executable, str(ROOT / "server.py")],
+                cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            )
+            wait_until_ready(base)
+            restarted = request_json(opener, f"{base}/api/bootstrap")
+            assert restarted["tasks"] == final["tasks"]
+            assert restarted["directory_links"] == final["directory_links"]
+            visitor = request_json(urllib.request.build_opener(), f"{base}/api/bootstrap")
+            assert visitor["public_read"] is False
+            assert visitor["authenticated"] is False
+            for key in ("tasks", "calendar_events", "directory_links", "directory_categories"):
+                assert visitor[key] == []
+            assert "focus_target" not in restarted["settings"]
+            assert not {"links", "papers", "focus_sessions"} & restarted.keys()
+            with sqlite3.connect(Path(data_dir) / "workspace.db") as db:
+                for table in ("links", "papers", "focus_sessions"):
+                    assert db.execute(f"SELECT title FROM {table}").fetchall() == [("Legacy data",)]
+                assert db.execute("SELECT value FROM settings WHERE key = 'focus_target'").fetchone() == ("legacy-invalid-value",)
+
+            print("PASS: auth, CSRF, CRUD, directory categories, task scheduling, calendar, export, retired APIs and legacy data preservation")
         finally:
             process.terminate()
             try:

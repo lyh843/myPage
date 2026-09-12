@@ -1,0 +1,4 @@
+cryptography==50.0.1
+python-dateutil==2.9.0.post0
+trafilatura==2.2.0
+urllib3==2.7.0

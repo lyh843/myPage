@@ -4,27 +4,35 @@ const state = {
   authenticated: false,
   csrfToken: "",
   settings: {},
-  links: [],
   directoryLinks: [],
   directoryCategories: [],
   tasks: [],
-  papers: [],
   calendarEvents: [],
+  occurrences: [],
+  reminders: [],
+  inbox: [],
+  history: [],
+  researchItems: [],
+  llmSettings: {},
+  feedRefreshing: false,
+  agendaDay: 0,
+  researchTab: "week",
+  researchSelected: null,
+  researchBusy: false,
+  historyTab: "all",
+  inboxExpanded: false,
+  loadSequence: 0,
   stats: {},
-  linkFilter: "全部",
   directoryFilter: "全部",
   taskFilter: "all",
-  paperFilter: "all",
   editor: { kind: "", id: null },
   commandItems: [],
   commandIndex: 0,
-  calendar: { view: localStorage.getItem("research-calendar-view") || "week", cursor: new Date(), scrollKey: "" },
-  timer: { total: 25 * 60, remaining: 25 * 60, running: false, interval: null, isBreak: false },
+  calendar: { view: localStorage.getItem("research-calendar-view") || "week", cursor: new Date() },
 };
 
 const labels = {
   taskStatus: { todo: "待处理", doing: "推进中", done: "已完成" },
-  paperStatus: { queue: "待读", reading: "精读中", done: "已完成" },
   priority: { low: "低", medium: "中", high: "高" },
 };
 
@@ -85,58 +93,57 @@ function setConnectionState(status) {
 }
 
 async function loadData({ quiet = false } = {}) {
+  const sequence = ++state.loadSequence;
   try {
     const data = await api("/api/bootstrap");
+    if (sequence !== state.loadSequence) return;
     state.authenticated = data.authenticated;
     state.csrfToken = data.csrf_token;
     state.settings = data.settings || {};
-    state.links = data.links || [];
     state.directoryLinks = data.directory_links || [];
     state.directoryCategories = data.directory_categories || [...new Set(state.directoryLinks.map((link) => link.category).filter(Boolean))];
     state.tasks = data.tasks || [];
-    state.papers = data.papers || [];
     state.calendarEvents = data.calendar_events || [];
+    state.occurrences = data.occurrences || [];
+    state.reminders = data.reminders || [];
+    state.inbox = data.inbox || [];
+    state.history = data.history || [];
+    state.researchItems = data.research_items || [];
+    state.llmSettings = data.llm_settings || {};
+    state.feedRefreshing = data.feed_refreshing || false;
     state.stats = data.stats || {};
     renderAll();
-    if (!data.public_read && !data.authenticated) showLogin();
+    if (!data.authenticated) showLogin();
   } catch (error) {
     if (!quiet) toast(error.message, true);
   }
 }
 
 function renderAll() {
+  document.body.classList.toggle("is-locked", !state.authenticated);
   document.body.classList.toggle("is-authenticated", state.authenticated);
   const loginButton = $("#login-button");
   loginButton.classList.toggle("is-authenticated", state.authenticated);
+  loginButton.setAttribute("aria-label", state.authenticated ? "退出登录" : "登录工作台");
   loginButton.innerHTML = state.authenticated
-    ? '<i data-lucide="shield-check"></i><span>编辑模式</span>'
-    : '<i data-lucide="lock-keyhole"></i><span>进入编辑</span>';
+    ? '<i data-lucide="log-out"></i><span>退出</span>'
+    : '<i data-lucide="lock-keyhole"></i><span>登录</span>';
 
   const settings = state.settings;
   $("#display-name").textContent = settings.display_name || "LYH";
   $("#sidebar-name").textContent = settings.display_name || "LYH";
-  $("#sidebar-role").textContent = settings.role || "AI learner";
+  $("#sidebar-role").textContent = settings.role || "个人日程";
   $("#profile-link").href = settings.github || "https://github.com/lyh843";
   $("#profile-link img").src = githubAvatar(settings.github);
 
-  $("#open-task-count").textContent = state.stats.open_tasks ?? 0;
-  $("#reading-count").textContent = state.stats.reading_papers ?? 0;
-  $("#weekly-focus").textContent = state.stats.focus_minutes ?? 0;
-  $("#weekly-target").textContent = state.stats.focus_target ?? 600;
-  $("#focus-page-minutes").textContent = state.stats.focus_minutes ?? 0;
   $("#task-nav-count").textContent = state.stats.open_tasks ?? 0;
   $("#directory-nav-count").textContent = state.stats.directory_links ?? state.directoryLinks.length;
   $("#directory-count").textContent = state.directoryLinks.length;
-  const focusPercent = Math.min(100, ((state.stats.focus_minutes || 0) / (state.stats.focus_target || 600)) * 100);
-  $("#pulse-fill").style.width = `${focusPercent}%`;
-  $("#focus-page-fill").style.width = `${focusPercent}%`;
-
   renderOverview();
-  renderLinks();
   renderDirectory();
   renderTasks();
-  renderPapers();
   renderCalendar();
+  renderWorkbench();
   refreshIcons();
 }
 
@@ -146,51 +153,39 @@ function githubAvatar(url) {
 }
 
 function renderOverview() {
+  const today = startOfCalendarDay(new Date());
+  const tomorrow = addCalendarDays(today, 1);
   const activeTasks = state.tasks
     .filter((task) => task.status !== "done")
-    .sort((a, b) => priorityRank(b.priority) - priorityRank(a.priority) || compareDates(taskSortValue(a), taskSortValue(b)));
-  const priority = activeTasks[0];
-  $("#today-priority").textContent = priority ? labels.priority[priority.priority] : "—";
-  $("#today-priority-label").textContent = priority ? truncate(priority.title, 13) : "尚未安排";
+    .sort((a, b) => (taskDeadline(a)?.getTime() ?? Infinity) - (taskDeadline(b)?.getTime() ?? Infinity) || priorityRank(b.priority) - priorityRank(a.priority));
+  $("#open-task-count").textContent = activeTasks.length;
+  $("#due-today-count").textContent = activeTasks.filter((task) => {
+    const due = taskDeadline(task);
+    return due && due >= today && due < tomorrow;
+  }).length;
+  $("#overdue-count").textContent = activeTasks.filter(isOverdue).length;
+  $("#today-event-count").textContent = calendarOccurrences(today, tomorrow).length;
 
   $("#overview-tasks").innerHTML = activeTasks.length
     ? activeTasks.slice(0, 4).map((task) => `
       <article class="priority-item">
         <span class="priority-dot ${escapeHtml(task.priority)}" aria-hidden="true"></span>
-        <div class="priority-copy"><strong>${escapeHtml(task.title)}</strong><span>${escapeHtml(task.course || "未分类")} · ${formatTaskTiming(task)}</span></div>
-        <button class="status-button auth-gated" type="button" data-advance-task="${task.id}"><i data-lucide="arrow-right"></i>${labels.taskStatus[task.status]}</button>
+        <div class="priority-copy"><button class="priority-title" type="button" data-edit="tasks" data-id="${task.id}">${escapeHtml(task.title)}</button><span class="${isOverdue(task) ? "overdue" : ""}">${escapeHtml(task.course || "未分类")} · ${formatTaskTiming(task)}</span></div>
+        <button class="status-button auth-gated" type="button" data-advance-task="${task.id}" aria-label="${task.status === "todo" ? "开始" : "完成"}任务：${escapeHtml(task.title)}"><i data-lucide="arrow-right"></i>${labels.taskStatus[task.status]}</button>
       </article>`).join("")
-    : emptyState("circle-check-big", "当前没有待办", "可以安排下一项学习任务");
-
-  const reading = state.papers.filter((paper) => paper.status !== "done");
-  $("#overview-papers").innerHTML = reading.length
-    ? reading.slice(0, 3).map((paper) => `
-      <article class="reading-item">
-        <div><strong>${escapeHtml(paper.title)}</strong><p>${escapeHtml(paper.authors || "作者待补充")} · ${escapeHtml(paper.venue || "来源待补充")}${paper.year ? ` ${paper.year}` : ""}</p></div>
-        <span class="paper-status ${paper.status}">${labels.paperStatus[paper.status]}</span>
-      </article>`).join("")
-    : emptyState("book-check", "阅读队列已清空", "收录下一篇值得精读的论文");
+    : emptyState("circle-check-big", "当前没有待办", "");
 
   renderOverviewCalendar();
-
-  $("#overview-links").innerHTML = state.links.length
-    ? state.links.slice(0, 6).map((link) => `
-      <a class="quick-link" data-color="${escapeHtml(link.color)}" href="${escapeHtml(link.url)}" target="_blank" rel="noreferrer">
-        <i data-lucide="${safeIcon(link.icon)}"></i>
-        <div><strong>${escapeHtml(link.title)}</strong><span>${escapeHtml(link.category)}</span></div>
-      </a>`).join("")
-    : emptyState("panels-top-left", "还没有快捷入口", "登录后添加常用工具");
 }
 
 function renderOverviewCalendar() {
   const now = new Date();
-  const rangeStart = startOfCalendarDay(now);
-  const upcoming = calendarOccurrences(rangeStart, addCalendarDays(now, 90))
-    .filter((item) => item.end > now)
-    .slice(0, 4);
+  const rangeStart = addCalendarDays(startOfCalendarDay(now), state.agendaDay);
+  const upcoming = calendarOccurrences(rangeStart, addCalendarDays(rangeStart, 1))
+    .filter((item) => !item.event.task_done);
   const container = $("#overview-calendar-list");
   if (!upcoming.length) {
-    container.innerHTML = `<div class="overview-calendar-empty"><i data-lucide="calendar-plus"></i><span><strong>近期没有日程</strong><small>添加日程后会在这里提醒你</small></span><button class="text-button auth-gated" type="button" data-action="add" data-kind="calendarEvents">新建日程 <i data-lucide="plus"></i></button></div>`;
+    container.innerHTML = `<div class="overview-calendar-empty"><i data-lucide="calendar-plus"></i><span><strong>${state.agendaDay ? "明天" : "今天"}没有安排</strong></span><button class="text-button auth-gated" type="button" data-action="add" data-kind="calendarEvents">新建日程 <i data-lucide="plus"></i></button></div>`;
     return;
   }
   container.innerHTML = upcoming.map((item) => {
@@ -200,7 +195,7 @@ function renderOverviewCalendar() {
     const sourceLabel = item.event._source === "task"
       ? ["任务", item.event.location].filter(Boolean).join(" · ")
       : item.event.location || item.event.calendar_name || "个人日历";
-    return `<button class="overview-calendar-item ${ongoing ? "is-ongoing" : ""}" type="button" data-calendar-open-day="${localDateKey(item.start)}" data-color="${escapeHtml(item.event.color)}">
+    return `<button class="overview-calendar-item ${ongoing ? "is-ongoing" : ""}" type="button" data-occurrence-key="${escapeHtml(item.key)}" data-color="${escapeHtml(item.event.color)}">
       <span class="overview-calendar-date"><small>${escapeHtml(dateLabel.label)}</small><strong>${padNumber(item.start.getDate())}</strong><em>${escapeHtml(dateLabel.month)}</em></span>
       <span class="overview-calendar-copy"><small>${ongoing ? "进行中" : timeLabel}${item.event.repeat_rule !== "none" ? " · 重复" : ""}</small><strong>${escapeHtml(item.event.title)}</strong><em>${escapeHtml(sourceLabel)}</em></span>
       <i data-lucide="chevron-right"></i>
@@ -212,31 +207,6 @@ function overviewCalendarDateLabel(value, today) {
   if (sameCalendarDay(value, today)) return { label: "今天", month: `${value.getMonth() + 1} 月` };
   if (sameCalendarDay(value, addCalendarDays(today, 1))) return { label: "明天", month: `${value.getMonth() + 1} 月` };
   return { label: `周${calendarWeekdays[(value.getDay() + 6) % 7]}`, month: `${value.getMonth() + 1} 月` };
-}
-
-function renderLinks() {
-  const categories = ["全部", ...new Set(state.links.map((link) => link.category).filter(Boolean))];
-  if (!categories.includes(state.linkFilter)) state.linkFilter = "全部";
-  $("#link-filters").innerHTML = categories.map((category) => `
-    <button class="${state.linkFilter === category ? "is-active" : ""}" type="button" data-link-filter="${escapeHtml(category)}">${escapeHtml(category)}</button>`).join("");
-  const query = $("#link-search").value.trim().toLowerCase();
-  const links = state.links.filter((link) => {
-    const inCategory = state.linkFilter === "全部" || link.category === state.linkFilter;
-    const inSearch = !query || [link.title, link.category, link.note].join(" ").toLowerCase().includes(query);
-    return inCategory && inSearch;
-  });
-  $("#links-grid").innerHTML = links.length
-    ? links.map((link) => `
-      <article class="link-card" data-color="${escapeHtml(link.color)}">
-        <div class="link-card-head">
-          <span class="link-icon"><i data-lucide="${safeIcon(link.icon)}"></i></span>
-          <button class="icon-button card-menu auth-only" type="button" data-edit="links" data-id="${link.id}" data-tooltip="编辑" aria-label="编辑 ${escapeHtml(link.title)}"><i data-lucide="pencil"></i></button>
-        </div>
-        <div class="link-copy"><strong>${escapeHtml(link.title)}</strong><p>${escapeHtml(link.note || domainOf(link.url))}</p></div>
-        <div class="link-card-foot"><span class="tag">${escapeHtml(link.category)}</span><a class="open-link" href="${escapeHtml(link.url)}" target="_blank" rel="noreferrer">打开 <i data-lucide="arrow-up-right"></i></a></div>
-      </article>`).join("")
-    : emptyState("search-x", "没有匹配的入口", "换一个关键词或分类试试");
-  refreshIcons();
 }
 
 function renderDirectory() {
@@ -320,34 +290,9 @@ function taskCard(task) {
   return `<article class="task-card">
     <div class="task-card-top"><span class="priority-mark ${escapeHtml(task.priority)}" title="${labels.priority[task.priority]}优先级"></span><button class="task-edit auth-only" type="button" data-edit="tasks" data-id="${task.id}" aria-label="编辑任务"><i data-lucide="more-horizontal"></i></button></div>
     <h3>${escapeHtml(task.title)}</h3><p>${escapeHtml(task.notes || task.course || "暂无备注")}</p>
-    <div class="task-card-meta"><span class="due ${dueClass}"><i data-lucide="${timingIcon}"></i>${formatTaskTiming(task)}</span><button class="advance-button auth-gated" type="button" data-advance-task="${task.id}" ${task.status === "done" ? "disabled" : ""}>${nextLabel}<i data-lucide="chevron-right"></i></button></div>
+    <div class="task-card-meta"><span class="due ${dueClass}"><i data-lucide="${timingIcon}"></i>${formatTaskTiming(task)}</span><button class="advance-button auth-gated" type="button" data-advance-task="${task.id}" ${task.status === "done" ? "disabled" : ""}>${task.skipped ? "已跳过" : nextLabel}<i data-lucide="chevron-right"></i></button></div>
+    ${task.status !== "done" ? `<div class="row-actions"><button type="button" class="text-button" data-plan-task="${task.id}"><i data-lucide="calendar-plus"></i>安排时间</button>${task.repeat_rule && task.repeat_rule !== "none" ? `<button type="button" class="text-button" data-skip-task="${task.id}"><i data-lucide="skip-forward"></i>跳过本次</button>` : ""}</div>` : ""}
   </article>`;
-}
-
-function renderPapers() {
-  const query = $("#paper-search").value.trim().toLowerCase();
-  const papers = state.papers.filter((paper) => {
-    const inStatus = state.paperFilter === "all" || paper.status === state.paperFilter;
-    const inSearch = !query || [paper.title, paper.authors, paper.venue, ...(paper.tags || [])].join(" ").toLowerCase().includes(query);
-    return inStatus && inSearch;
-  });
-  const tableBody = $("#paper-table-body");
-  tableBody.innerHTML = papers.length ? papers.map((paper) => `
-    <tr>
-      <td class="paper-title-cell">${paper.url ? `<a href="${escapeHtml(paper.url)}" target="_blank" rel="noreferrer">${escapeHtml(paper.title)}</a>` : `<strong>${escapeHtml(paper.title)}</strong>`}<span>${escapeHtml(paper.authors || "作者待补充")}</span></td>
-      <td class="venue-cell"><strong>${escapeHtml(paper.venue || "—")}</strong><span>${paper.year || "年份待补充"}</span></td>
-      <td><div class="tag-list">${(paper.tags || []).slice(0, 3).map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join("") || '<span class="tag">未分类</span>'}</div></td>
-      <td><span class="paper-status ${paper.status}">${labels.paperStatus[paper.status]}</span></td>
-      <td><div class="paper-row-actions"><button class="auth-only" type="button" data-edit="papers" data-id="${paper.id}" aria-label="编辑论文"><i data-lucide="pencil"></i></button>${paper.url ? `<a class="icon-button" href="${escapeHtml(paper.url)}" target="_blank" rel="noreferrer" aria-label="打开论文"><i data-lucide="arrow-up-right"></i></a>` : ""}</div></td>
-    </tr>`).join("") : `<tr><td colspan="5">${emptyState("search-x", "没有匹配的论文", "调整关键词或阅读状态")}</td></tr>`;
-
-  $("#mobile-paper-list").innerHTML = papers.length ? papers.map((paper) => `
-    <article class="mobile-paper">
-      <div class="mobile-paper-head"><h3>${escapeHtml(paper.title)}</h3><button class="task-edit auth-only" type="button" data-edit="papers" data-id="${paper.id}" aria-label="编辑论文"><i data-lucide="pencil"></i></button></div>
-      <p>${escapeHtml(paper.authors || "作者待补充")} · ${escapeHtml(paper.venue || "来源待补充")} ${paper.year || ""}</p>
-      <div class="mobile-paper-foot"><div class="tag-list">${(paper.tags || []).slice(0, 2).map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join("")}</div><span class="paper-status ${paper.status}">${labels.paperStatus[paper.status]}</span></div>
-    </article>`).join("") : emptyState("search-x", "没有匹配的论文", "调整关键词或阅读状态");
-  refreshIcons();
 }
 
 const calendarWeekdays = ["一", "二", "三", "四", "五", "六", "日"];
@@ -367,7 +312,6 @@ function startOfCalendarWeek(value) {
   return result;
 }
 function sameCalendarDay(a, b) { return localDateKey(a) === localDateKey(b); }
-function daysInCalendarMonth(year, month) { return new Date(year, month + 1, 0).getDate(); }
 
 function defaultCalendarStart() {
   const value = new Date();
@@ -409,98 +353,9 @@ function calendarVisibleRange() {
   return { start, end: addCalendarDays(start, 42), days: Array.from({ length: 42 }, (_, index) => addCalendarDays(start, index)) };
 }
 
-function recurrenceStart(base, rule, index) {
-  if (index === 0 || rule === "none") return new Date(base);
-  const result = new Date(base);
-  if (rule === "daily") result.setDate(result.getDate() + index);
-  if (rule === "weekly") result.setDate(result.getDate() + index * 7);
-  if (rule === "monthly") {
-    const day = base.getDate();
-    result.setDate(1);
-    result.setMonth(base.getMonth() + index);
-    result.setDate(Math.min(day, daysInCalendarMonth(result.getFullYear(), result.getMonth())));
-  }
-  if (rule === "yearly") {
-    const month = base.getMonth();
-    const day = base.getDate();
-    result.setDate(1);
-    result.setFullYear(base.getFullYear() + index);
-    result.setMonth(month);
-    result.setDate(Math.min(day, daysInCalendarMonth(result.getFullYear(), month)));
-  }
-  return result;
-}
-
-function recurrenceIndexNear(base, rule, target) {
-  if (target <= base || rule === "none") return 0;
-  const dayDistance = Math.floor((target - base) / 86400000);
-  if (rule === "daily") return Math.max(0, dayDistance - 2);
-  if (rule === "weekly") return Math.max(0, Math.floor(dayDistance / 7) - 2);
-  if (rule === "monthly") return Math.max(0, (target.getFullYear() - base.getFullYear()) * 12 + target.getMonth() - base.getMonth() - 2);
-  if (rule === "yearly") return Math.max(0, target.getFullYear() - base.getFullYear() - 2);
-  return 0;
-}
-
 function calendarOccurrences(rangeStart, rangeEnd) {
-  const occurrences = [];
-  state.calendarEvents.forEach((event) => {
-    const baseStart = parseLocalDateTime(event.start_at);
-    const baseEnd = parseLocalDateTime(event.end_at);
-    if (!baseStart || !baseEnd || baseEnd <= baseStart) return;
-    const duration = baseEnd.getTime() - baseStart.getTime();
-    const rule = event.repeat_rule || "none";
-    const until = event.repeat_until ? new Date(`${event.repeat_until}T23:59:59`) : null;
-    const firstIndex = recurrenceIndexNear(baseStart, rule, new Date(rangeStart.getTime() - duration));
-    for (let index = firstIndex; index < firstIndex + 5000; index += 1) {
-      const start = recurrenceStart(baseStart, rule, index);
-      if (until && start > until) break;
-      if (start >= rangeEnd) break;
-      const end = new Date(start.getTime() + duration);
-      if (end > rangeStart && start < rangeEnd) occurrences.push({ event, start, end, key: `${event.id}-${start.getTime()}` });
-      if (rule === "none") break;
-    }
-  });
-  state.tasks.forEach((task) => {
-    const event = taskCalendarEvent(task);
-    if (!event) return;
-    const start = parseLocalDateTime(event.start_at);
-    const end = parseLocalDateTime(event.end_at);
-    if (end > rangeStart && start < rangeEnd) occurrences.push({ event, start, end, key: `task-${task.id}` });
-  });
-  return occurrences.sort((a, b) => a.start - b.start || a.end - b.end);
-}
-
-function taskCalendarEvent(task) {
-  const end = parseLocalDateTime(task.end_at);
-  if (!end) return null;
-  const start = parseLocalDateTime(task.start_at) || new Date(end.getTime() - 60 * 60000);
-  if (start >= end) return null;
-  const color = task.status === "done" ? "green" : { high: "red", medium: "blue", low: "green" }[task.priority] || "blue";
-  return {
-    id: task.id,
-    title: task.title,
-    start_at: localDateTimeValue(start),
-    end_at: localDateTimeValue(end),
-    all_day: false,
-    location: task.course || "",
-    calendar_name: "任务",
-    color,
-    repeat_rule: "none",
-    repeat_until: "",
-    _editor_kind: "tasks",
-    _source: "task",
-  };
-}
-
-function calendarEditAttributes(event) {
-  const kind = event._editor_kind || "calendarEvents";
-  const source = event._source || "event";
-  return `data-edit="${kind}" data-id="${event.id}" data-color="${escapeHtml(event.color)}" data-calendar-source="${source}"`;
-}
-
-function calendarTrailingIcon(event) {
-  if (event._source === "task") return '<i data-lucide="list-checks" aria-label="任务"></i>';
-  return event.repeat_rule !== "none" ? '<i data-lucide="repeat-2" aria-label="重复日程"></i>' : "";
+  return state.occurrences.map((item) => ({ ...item, start: parseLocalDateTime(item.event.start_at), end: parseLocalDateTime(item.event.end_at) }))
+    .filter((item) => item.start < rangeEnd && item.end > rangeStart);
 }
 
 function calendarRangeTitle(range) {
@@ -515,14 +370,15 @@ function calendarRangeTitle(range) {
 
 function renderCalendar() {
   if (!$("#calendar-canvas")) return;
-  if (!["month", "week", "day"].includes(state.calendar.view)) state.calendar.view = "week";
+  if (!$('[data-view="calendar"]').classList.contains("is-active")) return;
+  if (!state.authenticated) return;
+  if (!["month", "week", "day", "list"].includes(state.calendar.view)) state.calendar.view = "week";
   const range = calendarVisibleRange();
   $("#calendar-range-title").textContent = calendarRangeTitle(range);
   $$('[data-calendar-view]', $("#calendar-view-switch")).forEach((button) => button.classList.toggle("is-active", button.dataset.calendarView === state.calendar.view));
   renderMiniCalendar(range);
   renderCalendarUpcoming();
-  if (state.calendar.view === "month") renderMonthCalendar(range);
-  else renderTimeCalendar(range);
+  renderInteractiveCalendar();
   refreshIcons();
 }
 
@@ -545,99 +401,24 @@ function renderCalendarUpcoming() {
   const now = new Date();
   const upcoming = calendarOccurrences(now, addCalendarDays(now, 90)).filter((item) => item.end > now).slice(0, 6);
   $("#calendar-upcoming").innerHTML = upcoming.length ? upcoming.map((item) => `
-    <button class="upcoming-event" type="button" ${calendarEditAttributes(item.event)}>
+    <button class="upcoming-event" type="button" data-occurrence-key="${escapeHtml(item.key)}" data-color="${escapeHtml(item.event.color)}">
       <span class="upcoming-date"><strong>${padNumber(item.start.getDate())}</strong><small>${item.start.getMonth() + 1} 月</small></span>
       <span><strong>${escapeHtml(item.event.title)}</strong><small>${item.event.all_day ? "全天" : `${padNumber(item.start.getHours())}:${padNumber(item.start.getMinutes())}`}${item.event._source === "task" ? " · 任务" : ""} ${item.event.location ? `· ${escapeHtml(item.event.location)}` : ""}</small></span>
     </button>`).join("") : `<div class="calendar-empty"><i data-lucide="calendar-check-2"></i><span>近期没有日程</span></div>`;
 }
 
-function renderMonthCalendar(range) {
-  const occurrences = calendarOccurrences(range.start, range.end);
-  $("#calendar-canvas").innerHTML = `
-    <div class="calendar-month-view">
-      <div class="month-weekdays">${calendarWeekdays.map((day, index) => `<span class="${index > 4 ? "is-weekend" : ""}">周${day}</span>`).join("")}</div>
-      <div class="month-grid">${range.days.map((day) => {
-        const dayStart = startOfCalendarDay(day);
-        const dayEnd = addCalendarDays(dayStart, 1);
-        const dayEvents = occurrences.filter((item) => item.end > dayStart && item.start < dayEnd);
-        const outside = day.getMonth() !== state.calendar.cursor.getMonth();
-        return `<div class="month-cell ${outside ? "is-outside" : ""} ${sameCalendarDay(day, new Date()) ? "is-today" : ""}" data-calendar-create="${localDateKey(day)}T09:00">
-          <button class="month-date" type="button" data-calendar-open-day="${localDateKey(day)}">${day.getDate()}</button>
-          <div class="month-events">${dayEvents.slice(0, 3).map((item) => monthEventChip(item, day)).join("")}${dayEvents.length > 3 ? `<button class="month-more" type="button" data-calendar-open-day="${localDateKey(day)}">还有 ${dayEvents.length - 3} 项</button>` : ""}</div>
-        </div>`;
-      }).join("")}</div>
-    </div>`;
-}
-
-function monthEventChip(occurrence, day) {
-  const startsToday = sameCalendarDay(occurrence.start, day);
-  const time = occurrence.event.all_day ? "" : startsToday ? `${padNumber(occurrence.start.getHours())}:${padNumber(occurrence.start.getMinutes())}` : "←";
-  return `<button class="month-event" type="button" ${calendarEditAttributes(occurrence.event)} title="${escapeHtml(occurrence.event.title)}"><span>${time}</span><strong>${escapeHtml(occurrence.event.title)}</strong>${calendarTrailingIcon(occurrence.event)}</button>`;
-}
-
-function renderTimeCalendar(range) {
-  const occurrences = calendarOccurrences(range.start, range.end);
-  const days = range.days;
-  const allDay = occurrences.filter((item) => item.event.all_day);
-  const timed = occurrences.filter((item) => !item.event.all_day);
-  const dayHeaders = days.map((day) => `<button class="calendar-day-head ${sameCalendarDay(day, new Date()) ? "is-today" : ""}" type="button" data-calendar-open-day="${localDateKey(day)}"><span>周${calendarWeekdays[(day.getDay() + 6) % 7]}</span><strong>${day.getDate()}</strong></button>`).join("");
-  const allDayColumns = days.map((day) => {
-    const start = startOfCalendarDay(day);
-    const end = addCalendarDays(start, 1);
-    return `<div class="all-day-column">${allDay.filter((item) => item.end > start && item.start < end).map((item) => `<button type="button" ${calendarEditAttributes(item.event)}><strong>${escapeHtml(item.event.title)}</strong>${calendarTrailingIcon(item.event)}</button>`).join("")}</div>`;
-  }).join("");
-  const timeLabels = Array.from({ length: 24 }, (_, hour) => `<span>${padNumber(hour)}:00</span>`).join("");
-  const columns = days.map((day) => renderTimeDayColumn(day, timed)).join("");
-  $("#calendar-canvas").innerHTML = `
-    <div class="calendar-time-view is-${state.calendar.view}" style="--calendar-days:${days.length}">
-      <div class="calendar-time-head"><span class="timezone-label">GMT+8</span>${dayHeaders}</div>
-      <div class="calendar-all-day"><span>全天</span>${allDayColumns}</div>
-      <div class="calendar-time-scroll">
-        <div class="calendar-time-grid"><div class="time-labels">${timeLabels}</div>${columns}</div>
-      </div>
-    </div>`;
-
-  const scrollKey = `${state.calendar.view}-${localDateKey(range.start)}`;
-  if (state.calendar.scrollKey !== scrollKey) {
-    state.calendar.scrollKey = scrollKey;
-    requestAnimationFrame(() => {
-      const scroller = $(".calendar-time-scroll", $("#calendar-canvas"));
-      if (scroller) scroller.scrollTop = Math.max(0, new Date().getHours() * 60 - 120);
-    });
-  }
-}
-
-function renderTimeDayColumn(day, occurrences) {
-  const dayStart = startOfCalendarDay(day);
-  const dayEnd = addCalendarDays(dayStart, 1);
-  const events = occurrences.filter((item) => item.end > dayStart && item.start < dayEnd);
-  const slots = Array.from({ length: 24 }, (_, hour) => `<button class="calendar-hour-slot" type="button" data-calendar-create="${localDateKey(day)}T${padNumber(hour)}:00" aria-label="${day.getMonth() + 1}月${day.getDate()}日 ${hour}点新建日程"></button>`).join("");
-  const eventButtons = events.map((item) => {
-    const clippedStart = item.start < dayStart ? dayStart : item.start;
-    const clippedEnd = item.end > dayEnd ? dayEnd : item.end;
-    const top = Math.max(0, (clippedStart - dayStart) / 60000);
-    const height = Math.max(24, (clippedEnd - clippedStart) / 60000);
-    return `<button class="time-event" type="button" style="--event-top:${top}px;--event-height:${height}px" ${calendarEditAttributes(item.event)} title="${escapeHtml(item.event.title)}"><strong>${escapeHtml(item.event.title)}</strong><span>${padNumber(item.start.getHours())}:${padNumber(item.start.getMinutes())}${item.event._source === "task" ? " · 任务" : ""}${item.event.location ? ` · ${escapeHtml(item.event.location)}` : ""}</span></button>`;
-  }).join("");
-  const now = new Date();
-  const nowLine = sameCalendarDay(day, now) ? `<span class="current-time-line" style="--now-top:${now.getHours() * 60 + now.getMinutes()}px"><i></i></span>` : "";
-  return `<div class="calendar-day-column ${sameCalendarDay(day, now) ? "is-today" : ""}">${slots}${eventButtons}${nowLine}</div>`;
-}
-
 function setCalendarView(view) {
-  if (!["month", "week", "day"].includes(view)) return;
+  if (!["month", "week", "day", "list"].includes(view)) return;
   state.calendar.view = view;
-  state.calendar.scrollKey = "";
   localStorage.setItem("research-calendar-view", view);
   renderCalendar();
 }
 
 function moveCalendar(direction) {
   const cursor = new Date(state.calendar.cursor);
-  if (state.calendar.view === "month") cursor.setMonth(cursor.getMonth() + direction);
-  else cursor.setDate(cursor.getDate() + direction * (state.calendar.view === "week" ? 7 : 1));
+  if (state.calendar.view === "month") { cursor.setDate(1); cursor.setMonth(cursor.getMonth() + direction); }
+  else cursor.setDate(cursor.getDate() + direction * (["week", "list"].includes(state.calendar.view) ? 7 : 1));
   state.calendar.cursor = cursor;
-  state.calendar.scrollKey = "";
   renderCalendar();
 }
 
@@ -646,7 +427,6 @@ function openCalendarDay(value) {
   if (Number.isNaN(dateValue.getTime())) return;
   state.calendar.cursor = dateValue;
   state.calendar.view = "day";
-  state.calendar.scrollKey = "";
   localStorage.setItem("research-calendar-view", "day");
   navigate("calendar");
 }
@@ -663,24 +443,16 @@ function emptyState(icon, title, description) {
 }
 
 function priorityRank(value) { return { low: 1, medium: 2, high: 3 }[value] || 0; }
-function compareDates(a, b) { return (a || "9999").localeCompare(b || "9999"); }
 function parseDate(value) { return value ? new Date(`${value}T23:59:59`) : null; }
-function taskSortValue(task) { return task.end_at || task.due_date; }
-function taskDeadline(task) { return parseLocalDateTime(task.end_at) || parseDate(task.due_date); }
+function taskDeadline(task) { return parseLocalDateTime(task.deadline_at) || parseDate(task.due_date); }
 function isOverdue(task) { const due = taskDeadline(task); return task.status !== "done" && due && due < new Date(); }
-function truncate(value, size) { const text = String(value || ""); return text.length > size ? `${text.slice(0, size)}…` : text; }
 function domainOf(url) { try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return "打开链接"; } }
 
 function formatTaskTiming(task) {
-  const end = parseLocalDateTime(task.end_at);
+  const end = parseLocalDateTime(task.deadline_at);
   if (!end) return formatDue(task.due_date);
-  const start = parseLocalDateTime(task.start_at);
   const endLabel = `${padNumber(end.getMonth() + 1)}/${padNumber(end.getDate())} ${padNumber(end.getHours())}:${padNumber(end.getMinutes())}`;
-  if (!start) return `${endLabel} 前`;
-  const startTime = `${padNumber(start.getHours())}:${padNumber(start.getMinutes())}`;
-  const endTime = `${padNumber(end.getHours())}:${padNumber(end.getMinutes())}`;
-  if (sameCalendarDay(start, end)) return `${padNumber(start.getMonth() + 1)}/${padNumber(start.getDate())} ${startTime}–${endTime}`;
-  return `${padNumber(start.getMonth() + 1)}/${padNumber(start.getDate())} ${startTime}–${endLabel}`;
+  return `${endLabel} 前`;
 }
 
 function formatDue(value) {
@@ -698,8 +470,8 @@ function formatDue(value) {
 }
 
 function navigate(route) {
-  const target = $(`[data-view="${route}"]`) ? route : "overview";
-  const routeLabels = { overview: "概览", directory: "网址导航", links: "快捷入口", tasks: "任务推进", calendar: "日历", papers: "论文队列", focus: "专注计时" };
+  const routeLabels = { overview: "概览", directory: "网址导航", tasks: "任务", calendar: "日历", research: "论文发现", settings: "设置" };
+  const target = Object.hasOwn(routeLabels, route) ? route : "overview";
   $$("[data-view]").forEach((view) => view.classList.toggle("is-active", view.dataset.view === target));
   $$("[data-route]").forEach((item) => {
     const isCurrent = item.dataset.route === target;
@@ -710,8 +482,10 @@ function navigate(route) {
   $("#mobile-route-title").textContent = routeLabels[target];
   history.replaceState(null, "", `#${target}`);
   window.scrollTo({ top: 0, behavior: "smooth" });
-  if (target === "focus") $("#focus-label").focus({ preventScroll: true });
   if (target === "calendar") renderCalendar();
+  if (target === "settings") renderSettings(true);
+  if (target === "research") renderResearch();
+  refreshIcons();
 }
 
 function requireAuth(callback) {
@@ -727,36 +501,23 @@ function showLogin() {
 }
 
 function editorFields(kind, record = {}) {
+  if (kind === "inbox") return `<label class="field"><span>收集内容</span><textarea name="title" maxlength="1000" required>${escapeHtml(record.title)}</textarea></label>`;
   if (kind === "directoryCategories") return `
     <label class="field"><span>分类名称 *</span><input name="name" maxlength="30" required placeholder="例如：科研工具"></label>`;
-  if (kind === "links" || kind === "directoryLinks") return `
+  if (kind === "directoryLinks") return `
     <label class="field"><span>名称 *</span><input name="title" maxlength="80" required value="${escapeHtml(record.title)}" placeholder="例如：Semantic Scholar"></label>
     <label class="field"><span>网址 *</span><input name="url" type="url" maxlength="1200" required value="${escapeHtml(record.url)}" placeholder="https://"></label>
-    <div class="field-row"><label class="field"><span>分类</span>${kind === "directoryLinks"
-      ? `<select name="category" required><option value="">请选择分类</option>${state.directoryCategories.map((category) => `<option value="${escapeHtml(category)}" ${category === (record.category || state.directoryFilter) ? "selected" : ""}>${escapeHtml(category)}</option>`).join("")}</select>`
-      : `<input name="category" maxlength="30" value="${escapeHtml(record.category || "工具")}" placeholder="论文 / 工具 / 课程">`}</label><label class="field"><span>图标</span><select name="icon">${iconOptions(record.icon)}</select></label></div>
+    <div class="field-row"><label class="field"><span>分类</span><select name="category" required><option value="">请选择分类</option>${state.directoryCategories.map((category) => `<option value="${escapeHtml(category)}" ${category === (record.category || state.directoryFilter) ? "selected" : ""}>${escapeHtml(category)}</option>`).join("")}</select></label><label class="field"><span>图标</span><select name="icon">${iconOptions(record.icon)}</select></label></div>
     <label class="field"><span>一句备注</span><input name="note" maxlength="160" value="${escapeHtml(record.note)}" placeholder="这个入口用于什么"></label>
     <div class="field"><span>标识色</span><div class="color-options">${["blue", "red", "yellow", "green", "dark"].map((color) => `<label title="${color}"><input type="radio" name="color" value="${color}" ${(record.color || "blue") === color ? "checked" : ""}><span style="--swatch:var(--${color === "dark" ? "ink" : color})"></span></label>`).join("")}</div></div>`;
-  if (kind === "tasks") return `
-    <label class="field"><span>任务名称 *</span><input name="title" maxlength="160" required value="${escapeHtml(record.title)}" placeholder="写成一个明确的行动"></label>
-    <div class="field-row"><label class="field"><span>领域 / 课程</span><input name="course" maxlength="50" value="${escapeHtml(record.course)}" placeholder="科研、深度学习…"></label><label class="field"><span>截止日期</span><input name="due_date" type="date" value="${escapeHtml(record.due_date)}"></label></div>
-    <div class="field-row"><label class="field"><span>起始时间</span><input name="start_at" type="datetime-local" value="${escapeHtml(record.start_at)}"></label><label class="field"><span>终止时间</span><input name="end_at" type="datetime-local" value="${escapeHtml(record.end_at)}"></label></div>
-    <div class="field-row"><label class="field"><span>优先级</span><select name="priority"><option value="low" ${record.priority === "low" ? "selected" : ""}>低</option><option value="medium" ${!record.priority || record.priority === "medium" ? "selected" : ""}>中</option><option value="high" ${record.priority === "high" ? "selected" : ""}>高</option></select></label><label class="field"><span>状态</span><select name="status"><option value="todo" ${!record.status || record.status === "todo" ? "selected" : ""}>待处理</option><option value="doing" ${record.status === "doing" ? "selected" : ""}>推进中</option><option value="done" ${record.status === "done" ? "selected" : ""}>已完成</option></select></label></div>
-    <label class="field"><span>备注</span><textarea name="notes" maxlength="1200" placeholder="记录交付标准或下一步">${escapeHtml(record.notes)}</textarea></label>`;
-  if (kind === "papers") return `
-    <label class="field"><span>论文标题 *</span><input name="title" maxlength="300" required value="${escapeHtml(record.title)}" placeholder="Paper title"></label>
-    <label class="field"><span>作者</span><input name="authors" maxlength="220" value="${escapeHtml(record.authors)}" placeholder="Author et al."></label>
-    <div class="field-row"><label class="field"><span>会议 / 期刊</span><input name="venue" maxlength="80" value="${escapeHtml(record.venue)}" placeholder="NeurIPS"></label><label class="field"><span>年份</span><input name="year" type="number" min="1900" max="${new Date().getFullYear() + 2}" value="${escapeHtml(record.year)}"></label></div>
-    <label class="field"><span>论文链接</span><input name="url" type="url" maxlength="1200" value="${escapeHtml(record.url)}" placeholder="https://arxiv.org/abs/..."></label>
-    <div class="field-row"><label class="field"><span>阅读状态</span><select name="status"><option value="queue" ${!record.status || record.status === "queue" ? "selected" : ""}>待读</option><option value="reading" ${record.status === "reading" ? "selected" : ""}>精读中</option><option value="done" ${record.status === "done" ? "selected" : ""}>已完成</option></select></label><label class="field"><span>标签（逗号分隔）</span><input name="tags" value="${escapeHtml((record.tags || []).join(", "))}" placeholder="LLM, Agent"></label></div>
-    <label class="field"><span>阅读笔记</span><textarea name="notes" maxlength="4000" placeholder="核心问题、方法与待验证想法">${escapeHtml(record.notes)}</textarea></label>`;
+  if (kind === "tasks") return taskEditorFields(record);
   if (kind === "calendarEvents") {
     const defaultStart = parseLocalDateTime(record.start_at) || defaultCalendarStart();
     const defaultEnd = parseLocalDateTime(record.end_at) || new Date(defaultStart.getTime() + 60 * 60000);
     const start = eventEditorParts(localDateTimeValue(defaultStart));
     const end = eventEditorParts(localDateTimeValue(defaultEnd));
     return `
-      <label class="field"><span>日程标题 *</span><input name="title" maxlength="160" required value="${escapeHtml(record.title)}" placeholder="例如：组会或论文精读"></label>
+      <label class="field"><span>日程标题 *</span><input name="title" maxlength="160" required value="${escapeHtml(record.title)}" placeholder="例如：课程、会议或预约"></label>
       <label class="check-field"><input name="all_day" type="checkbox" value="true" ${record.all_day ? "checked" : ""}><span><i data-lucide="sun"></i>全天日程</span></label>
       <div class="event-date-grid">
         <label class="field"><span>开始日期 *</span><input name="start_date" type="date" required value="${start.date}"></label>
@@ -764,15 +525,17 @@ function editorFields(kind, record = {}) {
         <label class="field"><span>结束日期 *</span><input name="end_date" type="date" required value="${end.date}"></label>
         <label class="field event-time-field"><span>结束时间 *</span><input name="end_time" type="time" required value="${end.time}"></label>
       </div>
-      <div class="field-row"><label class="field"><span>重复</span><select name="repeat_rule"><option value="none" ${!record.repeat_rule || record.repeat_rule === "none" ? "selected" : ""}>不重复</option><option value="daily" ${record.repeat_rule === "daily" ? "selected" : ""}>每天</option><option value="weekly" ${record.repeat_rule === "weekly" ? "selected" : ""}>每周</option><option value="monthly" ${record.repeat_rule === "monthly" ? "selected" : ""}>每月</option><option value="yearly" ${record.repeat_rule === "yearly" ? "selected" : ""}>每年</option></select></label><label class="field"><span>重复截止日期</span><input name="repeat_until" type="date" value="${escapeHtml(record.repeat_until)}"></label></div>
+      ${repeatEditorFields(record)}
+      ${record.id && record.repeat_rule !== "none" ? `<label class="field"><span>修改范围</span><select name="_scope"><option value="one">仅本次</option><option value="following">本次及以后</option><option value="all">整个系列（清除已有例外）</option></select></label>` : ""}
+      <div class="field-row"><label class="field"><span>关联任务</span><select name="task_id"><option value="">无</option>${state.tasks.filter((task) => task.status !== "done" || task.id === record.task_id).map((task) => `<option value="${task.id}" ${task.id === Number(record.task_id) ? "selected" : ""}>${escapeHtml(task.title)}</option>`).join("")}</select></label><label class="field"><span>站内提醒</span><select name="reminder_minutes">${[[-1,"不提醒"],[0,"开始时"],[5,"提前 5 分钟"],[15,"提前 15 分钟"],[30,"提前 30 分钟"],[60,"提前 1 小时"],[1440,"提前 1 天"]].map(([value,label]) => `<option value="${value}" ${Number(record.reminder_minutes ?? 15) === value ? "selected" : ""}>${label}</option>`).join("")}</select></label></div>
       <div class="field-row"><label class="field"><span>所属日历</span><input name="calendar_name" maxlength="40" value="${escapeHtml(record.calendar_name || "个人日历")}" placeholder="个人日历"></label><label class="field"><span>地点</span><input name="location" maxlength="200" value="${escapeHtml(record.location)}" placeholder="教室、会议室或线上链接"></label></div>
       <label class="field"><span>说明</span><textarea name="description" maxlength="2000" placeholder="记录议程、材料或准备事项">${escapeHtml(record.description)}</textarea></label>
       <input name="timezone" type="hidden" value="${escapeHtml(record.timezone || "Asia/Shanghai")}">
       <div class="field"><span>日程颜色</span><div class="color-options">${["blue", "red", "yellow", "green", "dark"].map((color) => `<label title="${color}"><input type="radio" name="color" value="${color}" ${(record.color || "blue") === color ? "checked" : ""}><span style="--swatch:var(--${color === "dark" ? "ink" : color})"></span></label>`).join("")}</div></div>`;
   }
   if (kind === "settings") return `
-    <div class="field-row"><label class="field"><span>页面称呼 *</span><input name="display_name" maxlength="40" required value="${escapeHtml(record.display_name)}"></label><label class="field"><span>本周专注目标（分钟）</span><input name="focus_target" type="number" min="30" max="5000" value="${escapeHtml(record.focus_target || 600)}"></label></div>
-    <label class="field"><span>身份描述</span><input name="role" maxlength="80" value="${escapeHtml(record.role)}" placeholder="AI learner · Undergraduate"></label>
+    <label class="field"><span>页面称呼 *</span><input name="display_name" maxlength="40" required value="${escapeHtml(record.display_name)}"></label>
+    <label class="field"><span>身份描述</span><input name="role" maxlength="80" value="${escapeHtml(record.role)}" placeholder="个人日程"></label>
     <label class="field"><span>工作台简介</span><textarea name="bio" maxlength="180">${escapeHtml(record.bio)}</textarea></label>
     <label class="field"><span>GitHub 主页</span><input name="github" type="url" value="${escapeHtml(record.github)}" placeholder="https://github.com/username"></label>`;
   return "";
@@ -792,17 +555,20 @@ function iconOptions(selected) {
 
 function openEditor(kind, id = null, defaults = {}) {
   requireAuth(() => {
-    const record = id === null ? defaults : state[kind].find((item) => item.id === Number(id)) || {};
-    state.editor = { kind, id: id === null ? null : Number(id) };
-    const nouns = { links: "快捷入口", directoryLinks: "导航站点", directoryCategories: "分类", tasks: "任务", calendarEvents: "日程", papers: "论文", settings: "工作台设置" };
+    const base = id === null ? {} : state[kind].find((item) => item.id === Number(id)) || {};
+    const record = { ...base, ...defaults };
+    state.editor = { kind, id: id === null ? null : Number(id), version: base.updated_at, occurrence: defaults._occurrence || base.start_at, inboxId: defaults._inbox_id, inboxVersion: defaults._inbox_version };
+    const nouns = { directoryLinks: "导航站点", directoryCategories: "分类", tasks: "任务", calendarEvents: "日程", settings: "工作台设置", inbox: "收集内容" };
     $("#editor-code").textContent = kind === "settings" ? "WORKSPACE PROFILE" : id === null ? "NEW ITEM" : "EDIT ITEM";
     $("#editor-title").textContent = kind === "settings" ? nouns[kind] : `${id === null ? "新增" : "编辑"}${nouns[kind]}`;
     $("#editor-fields").innerHTML = editorFields(kind, record);
-    $("#delete-button").style.visibility = id === null || kind === "settings" ? "hidden" : "visible";
+    $("#delete-button").hidden = id === null || kind === "settings";
+    $("#duplicate-button").hidden = kind !== "calendarEvents" || id === null;
     $("#save-button").textContent = id === null && kind !== "settings" ? "添加" : "保存更改";
     $("#editor-modal").showModal();
     refreshIcons();
     if (kind === "calendarEvents") syncEventAllDayFields();
+    syncRepeatFields();
     setTimeout(() => $("#editor-fields input")?.focus(), 30);
   });
 }
@@ -811,16 +577,12 @@ async function saveEditor(event) {
   event.preventDefault();
   const form = event.currentTarget;
   const { kind, id } = state.editor;
-  if (kind === "tasks") {
-    const startInput = form.elements.namedItem("start_at");
-    const endInput = form.elements.namedItem("end_at");
-    endInput.setCustomValidity("");
-    if (startInput.value && !endInput.value) endInput.setCustomValidity("设置起始时间后还需要设置终止时间");
-    if (startInput.value && endInput.value && endInput.value <= startInput.value) endInput.setCustomValidity("终止时间必须晚于起始时间");
-  }
   if (!form.reportValidity()) return;
   const data = Object.fromEntries(new FormData(form));
-  if (kind === "papers") data.tags = data.tags.split(",").map((tag) => tag.trim()).filter(Boolean);
+  data._version = state.editor.version;
+  data._inbox_id = state.editor.inboxId;
+  data._inbox_version = state.editor.inboxVersion;
+  data.repeat_weekdays = new FormData(form).getAll("repeat_weekdays").join(",");
   if (kind === "calendarEvents") {
     data.all_day = data.all_day === "true";
     data.start_at = `${data.start_date}T${data.all_day ? "00:00" : data.start_time}`;
@@ -831,20 +593,23 @@ async function saveEditor(event) {
     delete data.end_time;
   }
   const endpoint = endpointForKind(kind);
-  const path = kind === "settings" ? "/api/settings" : `/api/${endpoint}${id === null ? "" : `/${id}`}`;
-  const method = kind === "settings" ? "POST" : id === null ? "POST" : "PUT";
+  const scoped = kind === "calendarEvents" && id !== null;
+  const path = scoped ? `/api/calendar-events/${id}/occurrence` : kind === "settings" ? "/api/settings" : `/api/${endpoint}${id === null ? "" : `/${id}`}`;
+  const method = scoped || kind === "settings" || id === null ? "POST" : "PUT";
   const button = $("#save-button");
   button.disabled = true;
   button.textContent = "正在保存…";
   try {
-    const saved = await api(path, { method, body: JSON.stringify(data) });
+    if (kind === "calendarEvents" && !await confirmCalendarConflicts(data, id)) return;
+    const body = scoped ? { event: data, occurrence: state.editor.occurrence, scope: data._scope || "all", _version: state.editor.version } : data;
+    const saved = await api(path, { method, body: JSON.stringify(body) });
     if (kind === "directoryCategories") {
       state.directoryFilter = saved.name;
       $("#directory-search").value = "";
     }
     $("#editor-modal").close();
     await loadData({ quiet: true });
-    toast(kind === "settings" ? "工作台设置已更新" : id === null ? "已添加" : "更改已保存");
+    toast(kind === "settings" ? "工作台设置已更新" : id === null ? "已添加" : "更改已保存", false, saved._history_id || saved.history_id);
   } catch (error) {
     toast(error.message, true);
   } finally {
@@ -855,13 +620,17 @@ async function saveEditor(event) {
 
 async function deleteEditor() {
   const { kind, id } = state.editor;
-  if (!id || !confirm("确定删除这条记录吗？此操作无法撤销。")) return;
+  if (!id || !confirm("删除这条记录？30 天内可从操作历史恢复。")) return;
   try {
     const endpoint = endpointForKind(kind);
-    await api(`/api/${endpoint}/${id}`, { method: "DELETE" });
+    const scoped = kind === "calendarEvents";
+    const result = await api(scoped ? `/api/calendar-events/${id}/occurrence` : `/api/${endpoint}/${id}`, {
+      method: scoped ? "POST" : "DELETE",
+      body: JSON.stringify(scoped ? { delete: true, occurrence: state.editor.occurrence, scope: $("#editor-form").elements.namedItem("_scope")?.value || "all", _version: state.editor.version } : { _version: state.editor.version }),
+    });
     $("#editor-modal").close();
     await loadData({ quiet: true });
-    toast("已删除");
+    toast("已删除", false, result.history_id);
   } catch (error) { toast(error.message, true); }
 }
 
@@ -869,11 +638,11 @@ async function advanceTask(id) {
   requireAuth(async () => {
     const task = state.tasks.find((item) => item.id === Number(id));
     if (!task || task.status === "done") return;
-    const updated = { ...task, status: task.status === "todo" ? "doing" : "done" };
+    const updated = { ...task, _version: task.updated_at, status: task.status === "todo" ? "doing" : "done" };
     try {
-      await api(`/api/tasks/${task.id}`, { method: "PUT", body: JSON.stringify(updated) });
+      const result = await api(`/api/tasks/${task.id}`, { method: "PUT", body: JSON.stringify(updated) });
       await loadData({ quiet: true });
-      toast(updated.status === "done" ? "任务已完成" : "任务已进入推进中");
+      toast(updated.status === "done" ? "任务已完成" : "任务已进入推进中", false, result._history_id);
     } catch (error) { toast(error.message, true); }
   });
 }
@@ -885,11 +654,11 @@ async function login(event) {
   submit.disabled = true;
   $("#login-error").textContent = "";
   try {
-    const data = await api("/api/login", { method: "POST", body: JSON.stringify({ password }) });
+    const data = await api("/api/login", { method: "POST", body: JSON.stringify({ password, remember: $("#remember-browser").checked }) });
     state.csrfToken = data.csrf_token;
     $("#login-modal").close();
     await loadData({ quiet: true });
-    toast("已进入编辑模式");
+    toast("已登录");
   } catch (error) {
     $("#login-error").textContent = error.message;
     $("#login-password").select();
@@ -902,7 +671,7 @@ async function logout() {
     state.authenticated = false;
     state.csrfToken = "";
     await loadData({ quiet: true });
-    toast("已退出编辑模式");
+    toast("已退出登录");
   } catch (error) { toast(error.message, true); }
 }
 
@@ -929,118 +698,22 @@ function updateClock() {
   const weekday = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"][now.getDay()];
   const month = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"][now.getMonth()];
   $("#today-label").textContent = `${weekday} · ${month} ${String(now.getDate()).padStart(2, "0")}`;
-  const workday = Math.min(5, Math.max(1, now.getDay() || 5));
-  $$(".pulse-node").forEach((node, index) => {
-    const isWeekend = now.getDay() === 0 || now.getDay() === 6;
-    node.classList.toggle("is-done", index + 1 < workday || isWeekend);
-    node.classList.toggle("is-current", index + 1 === workday && !isWeekend);
-  });
-}
-
-function setTimerMinutes(minutes, isBreak = false) {
-  const parsed = Math.max(1, Math.min(240, Math.round(Number(minutes))));
-  if (!Number.isFinite(parsed)) return false;
-  stopTimer();
-  state.timer.total = parsed * 60;
-  state.timer.remaining = state.timer.total;
-  state.timer.isBreak = isBreak;
-  $$('[data-minutes]', $("#timer-modes")).forEach((button) => button.classList.toggle("is-active", Number(button.dataset.minutes) === parsed && Boolean(button.dataset.break) === isBreak));
-  if (!isBreak) $("#custom-focus-minutes").value = parsed;
-  renderTimer();
-  return true;
-}
-
-function renderTimer() {
-  const minutes = Math.floor(state.timer.remaining / 60);
-  const seconds = state.timer.remaining % 60;
-  const value = `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
-  $("#timer-display").textContent = value;
-  $("#overview-focus-duration").textContent = `${padNumber(Math.round(state.timer.total / 60))}:00`;
-  document.title = state.timer.running ? `${value} · Research Desk` : "Research Desk · AI 学习工作台";
-  $("#timer-toggle").innerHTML = state.timer.running ? '<i data-lucide="pause"></i><span>暂停</span>' : '<i data-lucide="play"></i><span>开始专注</span>';
-  refreshIcons();
-}
-
-function toggleTimer() {
-  if (state.timer.running) { stopTimer(); renderTimer(); return; }
-  state.timer.running = true;
-  state.timer.interval = setInterval(() => {
-    state.timer.remaining -= 1;
-    if (state.timer.remaining <= 0) completeTimer(false);
-    else renderTimer();
-  }, 1000);
-  if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
-  renderTimer();
-}
-
-function stopTimer() {
-  clearInterval(state.timer.interval);
-  state.timer.interval = null;
-  state.timer.running = false;
-}
-
-async function completeTimer(manual = false) {
-  const elapsedMinutes = Math.ceil((state.timer.total - state.timer.remaining) / 60);
-  const completedMinutes = manual ? elapsedMinutes : Math.round(state.timer.total / 60);
-  stopTimer();
-  state.timer.remaining = state.timer.total;
-  renderTimer();
-  if (manual && completedMinutes < 1) {
-    toast("尚未形成有效专注记录");
-    return;
-  }
-  if ("Notification" in window && Notification.permission === "granted") new Notification("本轮专注完成", { body: "记录进度，休息一下再继续。" });
-  if (state.timer.isBreak) {
-    toast("休息结束，可以开始下一轮了");
-    return;
-  }
-  if (state.authenticated) {
-    try {
-      await api("/api/focus-sessions", { method: "POST", body: JSON.stringify({ duration: completedMinutes, label: $("#focus-label").value }) });
-      await loadData({ quiet: true });
-      toast(`已记录 ${completedMinutes} 分钟专注`);
-    } catch (error) { toast(error.message, true); }
-  } else {
-    toast("本轮专注完成；登录后可累计到周目标");
-  }
-}
-
-function resetTimer() {
-  stopTimer();
-  state.timer.remaining = state.timer.total;
-  renderTimer();
-}
-
-function applyCustomFocus() {
-  const input = $("#custom-focus-minutes");
-  const minutes = Number(input.value);
-  if (!Number.isInteger(minutes) || minutes < 1 || minutes > 240) {
-    input.focus();
-    toast("专注时长需要设为 1 到 240 分钟", true);
-    return;
-  }
-  setTimerMinutes(minutes, false);
-  localStorage.setItem("research-focus-minutes", String(minutes));
-  toast(`本轮专注已设为 ${minutes} 分钟`);
 }
 
 function commandItems(query = "") {
   const normalized = query.trim().toLowerCase();
   const pages = [
     { icon: "layout-dashboard", title: "概览", meta: "页面", route: "overview" },
-    { icon: "panels-top-left", title: "快捷入口", meta: "页面", route: "links" },
-    { icon: "compass", title: "网址导航", meta: "页面", route: "directory" },
-    { icon: "list-checks", title: "任务推进", meta: "页面", route: "tasks" },
     { icon: "calendar-days", title: "日历", meta: "页面", route: "calendar" },
-    { icon: "library", title: "论文队列", meta: "页面", route: "papers" },
-    { icon: "timer-reset", title: "专注计时", meta: "页面", route: "focus" },
+    { icon: "list-checks", title: "任务", meta: "页面", route: "tasks" },
+    { icon: "compass", title: "网址导航", meta: "页面", route: "directory" },
+    { icon: "telescope", title: "论文发现", meta: "页面", route: "research" },
+    { icon: "settings-2", title: "设置", meta: "页面", route: "settings" },
   ];
-  const links = state.links.map((item) => ({ icon: safeIcon(item.icon), title: item.title, meta: `快捷入口 · ${item.category}`, url: item.url }));
   const directoryLinks = state.directoryLinks.map((item) => ({ icon: safeIcon(item.icon), title: item.title, meta: `网址导航 · ${item.category}`, url: item.url }));
   const tasks = state.tasks.map((item) => ({ icon: "circle-check", title: item.title, meta: `任务 · ${labels.taskStatus[item.status]}`, route: "tasks" }));
   const calendarEvents = state.calendarEvents.map((item) => ({ icon: "calendar-clock", title: item.title, meta: `日程 · ${item.start_at.replace("T", " ")}`, route: "calendar" }));
-  const papers = state.papers.map((item) => ({ icon: "file-text", title: item.title, meta: `论文 · ${labels.paperStatus[item.status]}`, url: item.url, route: "papers" }));
-  return [...pages, ...links, ...directoryLinks, ...tasks, ...calendarEvents, ...papers].filter((item) => !normalized || `${item.title} ${item.meta}`.toLowerCase().includes(normalized)).slice(0, 12);
+  return [...pages, ...directoryLinks, ...tasks, ...calendarEvents].filter((item) => !normalized || `${item.title} ${item.meta}`.toLowerCase().includes(normalized)).slice(0, 12);
 }
 
 function openCommand() {
@@ -1069,13 +742,14 @@ function runCommand(index = state.commandIndex) {
   else if (item.route) navigate(item.route);
 }
 
-function toast(message, error = false) {
+function toast(message, error = false, historyId = null) {
   const element = document.createElement("div");
   element.className = `toast${error ? " is-error" : ""}`;
-  element.innerHTML = `<i data-lucide="${error ? "circle-alert" : "circle-check"}"></i><span>${escapeHtml(message)}</span>`;
+  element.innerHTML = `<i data-lucide="${error ? "circle-alert" : "circle-check"}"></i><span>${escapeHtml(message)}</span>${historyId ? `<button type="button" data-undo="${historyId}" aria-label="撤销" title="撤销"><i data-lucide="undo-2"></i></button>` : ""}`;
   $("#toast-region").append(element);
+  while ($("#toast-region").children.length > (window.innerWidth < 560 ? 1 : 2)) $("#toast-region").firstElementChild.remove();
   refreshIcons();
-  setTimeout(() => element.remove(), 3200);
+  setTimeout(() => element.remove(), historyId ? 10000 : 4200);
 }
 
 function submitWebSearch(event) {
@@ -1098,6 +772,8 @@ function submitWebSearch(event) {
 }
 
 function bindEvents() {
+  bindWorkbench();
+  window.addEventListener("hashchange", () => navigate(location.hash.slice(1)));
   document.addEventListener("click", (event) => {
     const route = event.target.closest("[data-route]");
     if (route) { navigate(route.dataset.route); return; }
@@ -1109,8 +785,6 @@ function bindEvents() {
     if (edit) { openEditor(edit.dataset.edit, edit.dataset.id); return; }
     const advance = event.target.closest("[data-advance-task]");
     if (advance) { advanceTask(advance.dataset.advanceTask); return; }
-    const linkFilter = event.target.closest("[data-link-filter]");
-    if (linkFilter) { state.linkFilter = linkFilter.dataset.linkFilter; renderLinks(); return; }
     const directoryFilter = event.target.closest("[data-directory-filter]");
     if (directoryFilter) { state.directoryFilter = directoryFilter.dataset.directoryFilter; renderDirectory(); return; }
     const calendarDay = event.target.closest("[data-calendar-open-day]");
@@ -1120,7 +794,6 @@ function bindEvents() {
     const calendarDate = event.target.closest("[data-calendar-date]");
     if (calendarDate) {
       state.calendar.cursor = new Date(`${calendarDate.dataset.calendarDate}T12:00`);
-      state.calendar.scrollKey = "";
       renderCalendar();
       return;
     }
@@ -1129,20 +802,18 @@ function bindEvents() {
   });
   $$('[data-close-modal]').forEach((button) => button.addEventListener("click", () => button.closest("dialog").close()));
   $("#login-button").addEventListener("click", () => state.authenticated ? logout() : showLogin());
-  $("#settings-button").addEventListener("click", () => openEditor("settings", null, state.settings));
+  $("#settings-button").addEventListener("click", () => navigate("settings"));
   $("#export-button").addEventListener("click", exportData);
   $("#login-form").addEventListener("submit", login);
   $("#editor-form").addEventListener("submit", saveEditor);
-  $("#editor-fields").addEventListener("change", (event) => { if (event.target.name === "all_day") syncEventAllDayFields(); });
+  $("#editor-fields").addEventListener("change", (event) => { if (event.target.name === "all_day") syncEventAllDayFields(); syncRepeatFields(); });
   $("#delete-button").addEventListener("click", deleteEditor);
-  $("#link-search").addEventListener("input", renderLinks);
   $("#directory-search").addEventListener("input", renderDirectory);
   $("#web-search-form").addEventListener("submit", submitWebSearch);
   $("#search-engine").addEventListener("change", (event) => localStorage.setItem("research-search-engine", event.target.value));
-  $("#paper-search").addEventListener("input", renderPapers);
   $("#calendar-prev").addEventListener("click", () => moveCalendar(-1));
   $("#calendar-next").addEventListener("click", () => moveCalendar(1));
-  $("#calendar-today").addEventListener("click", () => { state.calendar.cursor = new Date(); state.calendar.scrollKey = ""; renderCalendar(); });
+  $("#calendar-today").addEventListener("click", () => { state.calendar.cursor = new Date(); renderCalendar(); });
   $("#calendar-view-switch").addEventListener("click", (event) => {
     const button = event.target.closest("[data-calendar-view]");
     if (button) setCalendarView(button.dataset.calendarView);
@@ -1154,23 +825,6 @@ function bindEvents() {
     $$("button", event.currentTarget).forEach((item) => item.classList.toggle("is-active", item === button));
     renderTasks();
   });
-  $("#paper-filters").addEventListener("click", (event) => {
-    const button = event.target.closest("[data-filter]");
-    if (!button) return;
-    state.paperFilter = button.dataset.filter;
-    $$("button", event.currentTarget).forEach((item) => item.classList.toggle("is-active", item === button));
-    renderPapers();
-  });
-  $("#timer-modes").addEventListener("click", (event) => {
-    const button = event.target.closest("[data-minutes]");
-    if (!button) return;
-    setTimerMinutes(button.dataset.minutes, button.dataset.break === "true");
-  });
-  $("#apply-custom-focus").addEventListener("click", applyCustomFocus);
-  $("#custom-focus-minutes").addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); applyCustomFocus(); } });
-  $("#timer-toggle").addEventListener("click", toggleTimer);
-  $("#timer-reset").addEventListener("click", resetTimer);
-  $("#timer-skip").addEventListener("click", () => completeTimer(true));
   $("#command-trigger").addEventListener("click", openCommand);
   $("#command-input").addEventListener("input", () => { state.commandIndex = 0; renderCommands(); });
   $("#command-input").addEventListener("keydown", (event) => {
@@ -1180,21 +834,24 @@ function bindEvents() {
   });
   document.addEventListener("keydown", (event) => {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); openCommand(); }
-    if (event.key === "Escape") $$("dialog[open]").forEach((dialog) => dialog.close());
+    if (event.key === "Escape") $$("dialog[open]").filter((dialog) => dialog.id !== "login-modal").forEach((dialog) => dialog.close());
   });
-  $$("dialog").forEach((dialog) => dialog.addEventListener("click", (event) => { if (event.target === dialog) dialog.close(); }));
+  $$("dialog").forEach((dialog) => dialog.addEventListener("click", (event) => { if (event.target === dialog && dialog.id !== "login-modal") dialog.close(); }));
+  $("#login-modal").addEventListener("cancel", (event) => event.preventDefault());
 }
 
 async function init() {
   bindEvents();
   $("#search-engine").value = localStorage.getItem("research-search-engine") || "bing";
   if (!localStorage.getItem("research-calendar-view") && window.innerWidth <= 560) state.calendar.view = "day";
-  const savedFocusMinutes = Number(localStorage.getItem("research-focus-minutes"));
-  if (Number.isInteger(savedFocusMinutes) && savedFocusMinutes >= 1 && savedFocusMinutes <= 240) setTimerMinutes(savedFocusMinutes);
   updateClock();
-  setInterval(updateClock, 30000);
+  setInterval(() => {
+    updateClock();
+    renderOverview();
+    refreshIcons();
+    if (state.authenticated && !document.hidden && !$("dialog[open]") && !state.researchBusy && !$("#llm-form").contains(document.activeElement)) loadData({ quiet: true });
+  }, 30000);
   navigate(location.hash.slice(1) || "overview");
-  renderTimer();
   refreshIcons();
   await loadData();
 }
