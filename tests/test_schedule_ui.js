@@ -82,6 +82,7 @@ assert.doesNotMatch(elements["#inbox-list"].innerHTML, /<img/);
 assert.equal(evaluate('editorFields("papers")'), "");
 assert.equal(evaluate('editorFields("links")'), "");
 assert.equal(evaluate('endpointForKind("projects")'), "projects");
+assert.match(evaluate('editorFields("projects", {title:"Experiment", variables:{metric:"92%"}})'), /name="title"[^>]*autofocus/);
 assert.match(evaluate('editorFields("projects", {title:"Experiment", variables:{metric:"92%"}})'), /name="variables"/);
 evaluate('state.projects = [{id: 7, title: "Pruning experiment", outcome: "A reproducible result", status: "active", priority: "high", due_date: "2026-09-20", variables: {metric: "92%"}, item_count: 2, completed_count: 1, progress: 50}]; state.tasks = [{id: 8, title: "Run baseline", project_id: 7, status: "todo", priority: "high", due_date: "2026-09-15"}]; state.selectedProjectId = 7; renderTasks()');
 assert.match(elements["#task-board"].innerHTML, /Pruning experiment/);

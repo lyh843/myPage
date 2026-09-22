@@ -536,7 +536,7 @@ function showLogin() {
 
 function projectEditorFields(record = {}) {
   const variables = Object.entries(record.variables || {}).map(([key, value]) => `${key}=${value}`).join("\n");
-  return `<label class="field"><span>项目名称 *</span><input name="title" maxlength="160" required value="${escapeHtml(record.title)}" placeholder="例如：完成模型压缩实验"></label>
+  return `<label class="field"><span>项目名称 *</span><input name="title" maxlength="160" required autofocus autocomplete="off" value="${escapeHtml(record.title)}" placeholder="例如：完成模型压缩实验"></label>
     <label class="field"><span>期望结果</span><textarea name="outcome" maxlength="500" placeholder="完成后要得到什么？">${escapeHtml(record.outcome)}</textarea></label>
     <div class="field-row"><label class="field"><span>状态</span><select name="status">${Object.entries(labels.projectStatus).map(([key, label]) => `<option value="${key}" ${(record.status || "idea") === key ? "selected" : ""}>${label}</option>`).join("")}</select></label><label class="field"><span>优先级</span><select name="priority">${Object.entries(labels.priority).map(([key, label]) => `<option value="${key}" ${(record.priority || "medium") === key ? "selected" : ""}>${label}</option>`).join("")}</select></label></div>
     <div class="field-row"><label class="field"><span>截止日期</span><input name="due_date" type="date" value="${escapeHtml(record.due_date)}"></label><label class="field"><span>当前阻塞</span><input name="blocker" maxlength="500" value="${escapeHtml(record.blocker)}" placeholder="没有就留空"></label></div>
@@ -614,7 +614,10 @@ function openEditor(kind, id = null, defaults = {}) {
     refreshIcons();
     if (kind === "calendarEvents") syncEventAllDayFields();
     syncRepeatFields();
-    setTimeout(() => $("#editor-fields input")?.focus(), 30);
+    requestAnimationFrame(() => {
+      const firstField = $("#editor-fields [autofocus]") || $("#editor-fields input, #editor-fields textarea, #editor-fields select");
+      firstField?.focus({ preventScroll: true });
+    });
   });
 }
 
