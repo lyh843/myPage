@@ -51,6 +51,17 @@ def main():
             def undo(result):
                 return call(f"/api/history/{result.get('_history_id') or result['history_id']}/undo", {})
 
+            project = call("/api/projects", {"title": "Project fixture", "outcome": "Ship a result",
+                                              "status": "active", "variables": {"metric": "92%"}})
+            project_task = call("/api/tasks", {"title": "Project next action", "project_id": project["id"]})
+            project_view = next(item for item in bootstrap()["projects"] if item["id"] == project["id"])
+            assert project_view["variables"] == {"metric": "92%"}
+            assert project_view["item_count"] == 1 and project_view["progress"] == 0
+            removed_project = call(f"/api/projects/{project['id']}", {"_version": project["updated_at"]}, "DELETE")
+            assert next(item for item in bootstrap()["tasks"] if item["id"] == project_task["id"])["project_id"] is None
+            undo(removed_project)
+            assert next(item for item in bootstrap()["tasks"] if item["id"] == project_task["id"])["project_id"] == project["id"]
+
             captured = call("/api/inbox", {"title": "Prepare the next experiment"})
             task = call("/api/tasks", {"title": captured["title"], "_inbox_id": captured["id"],
                                       "_inbox_version": captured["updated_at"]})

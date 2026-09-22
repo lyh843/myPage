@@ -30,7 +30,7 @@
             <i data-lucide="calendar-days"></i><span>日历</span>
           </button>
           <button class="nav-item" type="button" data-route="tasks">
-            <i data-lucide="list-checks"></i><span>任务</span>
+            <i data-lucide="folder-kanban"></i><span>项目推进</span>
             <span class="nav-count" id="task-nav-count">0</span>
           </button>
           <button class="nav-item" type="button" data-route="directory">
@@ -59,9 +59,9 @@
             <span class="mobile-title"><strong>RD /</strong><small id="mobile-route-title">概览</small></span>
           </button>
 
-          <button class="command-trigger" id="command-trigger" type="button" aria-label="搜索日程、任务和网站">
+          <button class="command-trigger" id="command-trigger" type="button" aria-label="搜索项目、日程和网站">
             <i data-lucide="search"></i>
-            <span>搜索日程、任务和网站</span>
+            <span>搜索项目、推进项和网站</span>
           </button>
 
           <div class="topbar-actions">
@@ -91,16 +91,16 @@
                   <span>ASIA/SHANGHAI · GMT+8</span>
                 </div>
                 <div class="overview-actions">
-                  <button class="secondary-button auth-gated" type="button" data-action="add" data-kind="tasks"><i data-lucide="plus"></i> 新增任务</button>
+                  <button class="secondary-button auth-gated" type="button" data-action="add" data-kind="projects"><i data-lucide="folder-plus"></i> 新建项目</button>
                   <button class="primary-button auth-gated" type="button" data-action="add" data-kind="calendarEvents"><i data-lucide="calendar-plus"></i> 新建日程</button>
                 </div>
               </div>
             </div>
 
             <div class="metric-strip" aria-label="工作台概览数据">
-              <div class="metric"><span>待办任务</span><strong id="open-task-count">0</strong><small>项</small></div>
-              <div class="metric"><span>今日到期</span><strong id="due-today-count">0</strong><small>项任务</small></div>
-              <div class="metric metric-overdue"><span>已逾期</span><strong id="overdue-count">0</strong><small>项任务</small></div>
+              <div class="metric"><span>待推进项</span><strong id="open-task-count">0</strong><small>项</small></div>
+              <div class="metric"><span>今日到期</span><strong id="due-today-count">0</strong><small>项推进</small></div>
+              <div class="metric metric-overdue"><span>已逾期推进</span><strong id="overdue-count">0</strong><small>项</small></div>
               <div class="metric"><span>今日日程</span><strong id="today-event-count">0</strong><small>项安排</small></div>
             </div>
             <section class="capture-section" aria-labelledby="capture-heading">
@@ -120,8 +120,8 @@
 
             <section class="priorities-section" aria-labelledby="priority-heading">
               <div class="section-heading compact">
-                <div><span class="section-code">TO DO</span><h2 id="priority-heading">待办事项</h2></div>
-                <button class="text-button" type="button" data-route="tasks">查看全部 <i data-lucide="arrow-right"></i></button>
+                <div><span class="section-code">NEXT ACTIONS</span><h2 id="priority-heading">下一步推进</h2></div>
+                <button class="text-button" type="button" data-route="tasks">打开项目 <i data-lucide="arrow-right"></i></button>
               </div>
               <div class="priority-list" id="overview-tasks"></div>
             </section>
@@ -161,17 +161,22 @@
 
           <section class="view" data-view="tasks" aria-labelledby="tasks-title">
             <div class="page-heading">
-              <div><span class="section-code">TASKS</span><h1 id="tasks-title">任务</h1></div>
-              <button class="primary-button auth-gated" type="button" data-action="add" data-kind="tasks"><i data-lucide="plus"></i> 新增任务</button>
+              <div><span class="section-code">PROJECTS / NEXT ACTIONS</span><h1 id="tasks-title">项目推进</h1></div>
+              <button class="primary-button auth-gated" type="button" data-action="add" data-kind="projects"><i data-lucide="folder-plus"></i> 新建项目</button>
             </div>
             <div class="filter-bar task-toolbar">
-              <div class="segmented-control" id="task-filters" aria-label="任务筛选">
-                <button class="is-active" type="button" data-filter="all">全部</button>
-                <button type="button" data-filter="high">高优先级</button>
-                <button type="button" data-filter="due">即将截止</button>
+              <div class="segmented-control" id="task-filters" aria-label="项目筛选">
+                <button class="is-active" type="button" data-filter="all">全部项目</button>
+                <button type="button" data-filter="active">进行中</button>
+                <button type="button" data-filter="blocked">有阻塞</button>
+                <button type="button" data-filter="due">近期截止</button>
+                <button type="button" data-filter="archived">已归档</button>
               </div>
             </div>
-            <div class="kanban" id="task-board"></div>
+            <div class="project-workspace">
+              <div class="project-list" id="task-board"></div>
+              <aside class="project-detail" id="project-detail" aria-label="项目详情"></aside>
+            </div>
           </section>
 
           <section class="view calendar-view" data-view="calendar" aria-labelledby="calendar-title">
@@ -254,7 +259,7 @@
     <nav class="mobile-nav" aria-label="移动端导航">
       <button class="is-active" type="button" data-route="overview"><i data-lucide="layout-dashboard"></i><span>概览</span></button>
       <button type="button" data-route="calendar"><i data-lucide="calendar-days"></i><span>日历</span></button>
-      <button type="button" data-route="tasks"><i data-lucide="list-checks"></i><span>任务</span></button>
+      <button type="button" data-route="tasks"><i data-lucide="folder-kanban"></i><span>项目</span></button>
       <button type="button" data-route="directory"><i data-lucide="compass"></i><span>导航</span></button>
       <button type="button" data-route="research"><i data-lucide="telescope"></i><span>论文</span></button>
     </nav>

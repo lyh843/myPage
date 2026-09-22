@@ -398,6 +398,66 @@ body.is-authenticated .directory-site:hover .directory-edit { display: grid !imp
 .advance-button:disabled { background: var(--green-soft); color: var(--green); cursor: default; }
 .advance-button svg { width: 11px; }
 
+.project-workspace { display: grid; grid-template-columns: minmax(260px, .8fr) minmax(0, 1.4fr); min-height: 520px; border: 1px solid var(--line); background: var(--line); gap: 1px; }
+.project-list { display: grid; align-content: start; gap: 1px; background: var(--line); }
+.project-card { display: grid; grid-template-columns: 4px minmax(0, 1fr) 48px; gap: 12px; width: 100%; padding: 16px; border: 0; background: var(--paper); color: var(--ink); text-align: left; cursor: pointer; }
+.project-card:hover, .project-card.is-selected { background: white; }
+.project-card.is-selected { box-shadow: inset 3px 0 var(--blue); }
+.project-card-mark { width: 4px; min-height: 58px; background: var(--blue); }
+.project-card-mark.high { background: var(--red); }
+.project-card-mark.low { background: var(--green); }
+.project-card-main { min-width: 0; }
+.project-card-main strong, .project-card-main small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-card-main strong { font-size: 13px; }
+.project-card-main small { margin-top: 5px; color: var(--muted); font-size: 10px; }
+.project-card-meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; color: var(--muted); font: 9px var(--font-mono); }
+.project-card-meta .overdue { color: var(--red); }
+.project-progress { display: grid; align-content: center; justify-items: end; gap: 6px; color: var(--blue); }
+.project-progress strong { font: 12px var(--font-mono); }
+.project-progress > span, .project-progress-large > span { display: block; width: 48px; height: 4px; background: var(--line); }
+.project-progress i, .project-progress-large i { display: block; height: 100%; background: var(--blue); }
+.project-detail { min-width: 0; padding: 24px; background: white; }
+.project-detail-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding-bottom: 20px; border-bottom: 1px solid var(--line); }
+.project-detail-head h2 { margin: 6px 0 7px; font-size: 22px; line-height: 1.25; }
+.project-detail-head p { max-width: 600px; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.project-status-line { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 14px 0; color: var(--muted); font: 10px var(--font-mono); }
+.status-chip { display: inline-flex; padding: 4px 7px; background: var(--blue-soft); color: var(--blue); }
+.status-chip.done { background: var(--green-soft); color: var(--green); }
+.status-chip.paused { background: var(--yellow-soft); color: #737700; }
+.status-chip.archived { background: #eceef1; color: var(--muted); }
+.status-chip.idea { background: #f0edf9; color: #6c58a5; }
+.project-status-line > span:not(.status-chip) { display: inline-flex; align-items: center; gap: 4px; }
+.project-status-line svg { width: 12px; }
+.project-progress-large { padding: 15px; background: var(--paper); }
+.project-progress-large > div { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 9px; }
+.project-progress-large > div span, .project-progress-large small { color: var(--muted); font-size: 10px; }
+.project-progress-large > div strong { color: var(--blue); font: 18px var(--font-mono); }
+.project-progress-large > span { width: 100%; height: 6px; }
+.project-progress-large small { display: block; margin-top: 8px; }
+.project-blocker { display: flex; gap: 10px; margin-top: 14px; padding: 12px; background: var(--red-soft); color: var(--red); }
+.project-blocker svg { width: 16px; flex: 0 0 auto; }
+.project-blocker span, .project-blocker strong { display: block; }
+.project-blocker span { margin-bottom: 3px; font: 9px var(--font-mono); }
+.project-blocker strong { color: var(--ink); font-size: 11px; line-height: 1.45; }
+.project-variables, .project-items { margin-top: 24px; }
+.project-variables h3, .project-items h3 { margin: 0; font-size: 13px; }
+.project-variables dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; margin: 12px 0 0; background: var(--line); }
+.project-variables dl > div { min-width: 0; padding: 10px; background: var(--paper); }
+.project-variables dt { color: var(--muted); font: 9px var(--font-mono); }
+.project-variables dd { margin: 4px 0 0; overflow-wrap: anywhere; font-size: 11px; line-height: 1.4; }
+.project-item-list { display: grid; gap: 1px; margin-top: 10px; background: var(--line); }
+.project-item { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 10px; background: var(--paper); }
+.project-item.is-done { opacity: .62; }
+.project-item-toggle, .project-item-title { border: 0; background: transparent; color: inherit; cursor: pointer; }
+.project-item-toggle { display: grid; width: 24px; height: 24px; place-items: center; padding: 0; color: var(--blue); }
+.project-item-toggle svg { width: 18px; }
+.project-item.is-done .project-item-toggle { color: var(--green); }
+.project-item-title { padding: 0; text-align: left; font-size: 11px; font-weight: 600; }
+.project-item small { display: block; margin-top: 4px; color: var(--muted); font: 9px var(--font-mono); }
+.project-item small.overdue { color: var(--red); }
+.project-item .row-actions { gap: 3px; }
+.project-item .icon-button { width: 28px; height: 28px; }
+
 .calendar-view { padding: 30px clamp(20px, 3vw, 44px) 44px; }
 .calendar-toolbar { display: grid; grid-template-columns: auto minmax(300px, 1fr) auto; align-items: end; gap: 30px; margin-bottom: 22px; }
 .calendar-title-block h1 { margin: 1px 0 0; font-size: 34px; line-height: 1; }
@@ -616,6 +676,8 @@ body.is-locked #login-modal::backdrop { background: #eef1f5; backdrop-filter: no
   .calendar-toolbar-actions { grid-column: 1 / -1; justify-content: flex-end; }
   .calendar-workspace { grid-template-columns: 1fr; }
   .calendar-sidebar { display: none; }
+  .project-workspace { grid-template-columns: 1fr; }
+  .project-detail { border-top: 1px solid var(--line); }
   .overview-calendar-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .research-layout:has(.research-detail:not([hidden])) { grid-template-columns: 1fr; }
   .research-detail { position: static; padding-left: 0; border-left: 0; }

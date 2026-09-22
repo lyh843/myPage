@@ -28,8 +28,8 @@ function syncRepeatFields() {
 }
 
 function taskEditorFields(record) {
-  return `<label class="field"><span>任务名称 *</span><input name="title" maxlength="160" required value="${escapeHtml(record.title)}"></label>
-    <div class="field-row"><label class="field"><span>分类</span><input name="course" maxlength="50" value="${escapeHtml(record.course)}"></label><label class="field"><span>截止日期</span><input name="due_date" type="date" value="${escapeHtml(record.due_date)}"></label></div>
+  return `<label class="field"><span>推进项名称 *</span><input name="title" maxlength="160" required value="${escapeHtml(record.title)}"></label>
+    <div class="field-row"><label class="field"><span>所属项目</span><select name="project_id"><option value="">未归类</option>${state.projects.map((project) => `<option value="${project.id}" ${Number(record.project_id) === project.id ? "selected" : ""}>${escapeHtml(project.title)}</option>`).join("")}</select></label><label class="field"><span>截止日期</span><input name="due_date" type="date" value="${escapeHtml(record.due_date)}"></label></div>
     <label class="field"><span>精确截止时间（可选）</span><input name="deadline_at" type="datetime-local" value="${escapeHtml(record.deadline_at)}"></label>
     <div class="field-row"><label class="field"><span>优先级</span><select name="priority">${Object.entries(labels.priority).map(([key, value]) => `<option value="${key}" ${(record.priority || "medium") === key ? "selected" : ""}>${value}</option>`).join("")}</select></label><label class="field"><span>状态</span><select name="status">${Object.entries(labels.taskStatus).map(([key, value]) => `<option value="${key}" ${(record.status || "todo") === key ? "selected" : ""}>${value}</option>`).join("")}</select></label></div>
     ${repeatEditorFields(record)}
@@ -169,7 +169,8 @@ function renderInbox() {
   $("#inbox-toggle").textContent = state.inboxExpanded ? "收起" : "展开全部";
   const items = state.inboxExpanded ? state.inbox : state.inbox.slice(0, 3);
   $("#inbox-list").innerHTML = items.map((item) => `<div class="inbox-item"><button class="inbox-title" type="button" data-edit="inbox" data-id="${item.id}">${escapeHtml(item.title)}</button><div class="row-actions">
-    <button class="icon-button" type="button" data-convert-inbox="${item.id}" data-kind="tasks" aria-label="转为任务" data-tooltip="转为任务"><i data-lucide="list-plus"></i></button>
+    <button class="icon-button" type="button" data-convert-inbox="${item.id}" data-kind="projects" aria-label="转为项目" data-tooltip="转为项目"><i data-lucide="folder-plus"></i></button>
+    <button class="icon-button" type="button" data-convert-inbox="${item.id}" data-kind="tasks" aria-label="加入项目" data-tooltip="加入项目"><i data-lucide="list-plus"></i></button>
     <button class="icon-button" type="button" data-convert-inbox="${item.id}" data-kind="calendarEvents" aria-label="转为日程" data-tooltip="转为日程"><i data-lucide="calendar-plus"></i></button>
     <button class="icon-button" type="button" data-delete-inbox="${item.id}" aria-label="删除收集内容" data-tooltip="删除"><i data-lucide="trash-2"></i></button></div></div>`).join("");
 }
@@ -365,7 +366,7 @@ function bindWorkbench() {
       if (button.dataset.planTask || button.dataset.action === "plan-task") planTask(button.dataset.planTask);
       if (button.dataset.convertInbox) {
         const item = state.inbox.find((item) => item.id === Number(button.dataset.convertInbox));
-        openEditor(button.dataset.kind, null, { title: item.title.slice(0, 160), notes: item.title, description: item.title, _inbox_id: item.id, _inbox_version: item.updated_at });
+        openEditor(button.dataset.kind, null, { title: item.title.slice(0, 160), notes: item.title, description: item.title, project_id: button.dataset.kind === "tasks" ? state.selectedProjectId : undefined, _inbox_id: item.id, _inbox_version: item.updated_at });
       }
       if (button.dataset.deleteInbox) {
         const item = state.inbox.find((item) => item.id === Number(button.dataset.deleteInbox));

@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from dateutil.rrule import DAILY, MONTHLY, WEEKLY, YEARLY, rrule
 
 
-TABLES = {"tasks", "calendar_events", "inbox", "research_items"}
+TABLES = {"projects", "tasks", "calendar_events", "inbox", "research_items"}
 FREQUENCIES = {"daily": DAILY, "weekly": WEEKLY, "monthly": MONTHLY, "yearly": YEARLY}
 
 
@@ -40,6 +40,7 @@ def init_schema(db):
     """)
     additions = {
         "tasks": {
+            "project_id": "INTEGER REFERENCES projects(id)",
             "deadline_at": "TEXT NOT NULL DEFAULT ''",
             "repeat_rule": "TEXT NOT NULL DEFAULT 'none'",
             "repeat_interval": "INTEGER NOT NULL DEFAULT 1",

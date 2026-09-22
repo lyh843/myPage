@@ -86,6 +86,20 @@ def init_database() -> None:
                 name TEXT PRIMARY KEY
             );
 
+            CREATE TABLE IF NOT EXISTS projects (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                outcome TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'idea',
+                priority TEXT NOT NULL DEFAULT 'medium',
+                due_date TEXT NOT NULL DEFAULT '',
+                blocker TEXT NOT NULL DEFAULT '',
+                notes TEXT NOT NULL DEFAULT '',
+                variables TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS tasks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 title TEXT NOT NULL,
@@ -96,6 +110,7 @@ def init_database() -> None:
                 priority TEXT NOT NULL DEFAULT 'medium',
                 status TEXT NOT NULL DEFAULT 'todo',
                 notes TEXT NOT NULL DEFAULT '',
+                project_id INTEGER REFERENCES projects(id),
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -369,6 +384,41 @@ def validate_payload(table: str, data: dict[str, Any]) -> dict[str, Any]:
         return {"title": clean_text(data.get("title"), "收集内容", 1000, True)}
     if table == "research_items":
         return {"favorite": int(bool(data.get("favorite")))}
+    if table == "projects":
+        status = clean_text(data.get("status", "idea"), "项目状态", 20) or "idea"
+        priority = clean_text(data.get("priority", "medium"), "优先级", 20) or "medium"
+        due_date = clean_text(data.get("due_date"), "截止日期", 10)
+        if status not in {"idea", "active", "paused", "done", "archived"}:
+            raise ValueError("项目状态无效")
+        if priority not in {"low", "medium", "high"}:
+            raise ValueError("优先级无效")
+        if due_date:
+            try:
+                datetime.strptime(due_date, "%Y-%m-%d")
+            except ValueError:
+                raise ValueError("截止日期格式无效") from None
+        variables = data.get("variables", {})
+        if isinstance(variables, str):
+            try:
+                variables = json.loads(variables or "{}")
+            except json.JSONDecodeError as error:
+                raise ValueError("项目变量格式无效") from error
+        if not isinstance(variables, dict) or len(variables) > 20:
+            raise ValueError("项目变量应是不超过 20 项的对象")
+        cleaned_variables = {}
+        for key, value in variables.items():
+            name = clean_text(key, "变量名称", 40, True)
+            cleaned_variables[name] = clean_text(value, name, 300)
+        return {
+            "title": clean_text(data.get("title"), "项目名称", 160, True),
+            "outcome": clean_text(data.get("outcome"), "期望结果", 500),
+            "status": status,
+            "priority": priority,
+            "due_date": due_date,
+            "blocker": clean_text(data.get("blocker"), "当前阻塞", 500),
+            "notes": clean_text(data.get("notes"), "项目备注", 2000),
+            "variables": json.dumps(cleaned_variables, ensure_ascii=False),
+        }
     if table == "directory_links":
         color = clean_text(data.get("color", "blue"), "颜色", 20)
         if color not in {"blue", "red", "yellow", "green", "dark"}:
@@ -415,6 +465,7 @@ def validate_payload(table: str, data: dict[str, Any]) -> dict[str, Any]:
             "priority": priority,
             "status": status,
             "notes": clean_text(data.get("notes"), "备注", 1200),
+            "project_id": schedule.integer(data["project_id"], 1, 2147483647, "所属项目") if data.get("project_id") else None,
             "deadline_at": deadline_at,
             **repeat,
         }
@@ -478,6 +529,19 @@ def get_bootstrap_data(authenticated: bool) -> dict[str, Any]:
         if not can_read:
             settings = {}
         if can_read:
+            projects = [dict(row) for row in db.execute("SELECT * FROM projects ORDER BY status, due_date, id")]
+            for project in projects:
+                try:
+                    project["variables"] = json.loads(project.get("variables") or "{}")
+                except json.JSONDecodeError:
+                    project["variables"] = {}
+                counts = db.execute(
+                    "SELECT COUNT(*) AS total, SUM(status='done') AS completed FROM tasks WHERE project_id=?",
+                    (project["id"],),
+                ).fetchone()
+                project["item_count"] = counts["total"] or 0
+                project["completed_count"] = counts["completed"] or 0
+                project["progress"] = round(project["completed_count"] / project["item_count"] * 100) if project["item_count"] else 0
             directory_links = [dict(row) for row in db.execute("SELECT * FROM directory_links ORDER BY position, id")]
             directory_categories = [
                 row["name"] for row in db.execute("SELECT name FROM directory_categories ORDER BY rowid")
@@ -488,7 +552,7 @@ def get_bootstrap_data(authenticated: bool) -> dict[str, Any]:
                 for row in db.execute("SELECT * FROM calendar_events ORDER BY start_at, id")
             ]
         else:
-            directory_links, tasks, calendar_events = [], [], []
+            projects, directory_links, tasks, calendar_events = [], [], [], []
             directory_categories = []
         extra = {}
         if authenticated:
@@ -505,12 +569,14 @@ def get_bootstrap_data(authenticated: bool) -> dict[str, Any]:
 
     stats = {
         "open_tasks": sum(task["status"] != "done" for task in tasks),
+        "open_projects": sum(project["status"] in {"idea", "active", "paused"} for project in projects),
         "directory_links": len(directory_links),
     }
     return {
         "authenticated": authenticated,
         "public_read": False,
         "settings": settings,
+        "projects": projects,
         "directory_links": directory_links,
         "directory_categories": directory_categories,
         "tasks": tasks,
@@ -620,7 +686,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         if self.feature_action(path, data):
             return
 
-        match = re.fullmatch(r"/api/(directory-links|tasks|calendar-events|inbox)", path)
+        match = re.fullmatch(r"/api/(directory-links|projects|tasks|calendar-events|inbox)", path)
         if match:
             self.create_record(match.group(1).replace("-", "_"), data)
             return
@@ -645,7 +711,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         authenticated, csrf = self.auth_context()
         if not self.require_write_auth(authenticated, csrf):
             return
-        match = re.fullmatch(r"/api/(directory-links|tasks|calendar-events|inbox|research-items)/(\d+)", path)
+        match = re.fullmatch(r"/api/(directory-links|projects|tasks|calendar-events|inbox|research-items)/(\d+)", path)
         if not match:
             self.send_error_json(HTTPStatus.NOT_FOUND, "接口不存在")
             return
@@ -656,7 +722,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         authenticated, csrf = self.auth_context()
         if not self.require_write_auth(authenticated, csrf):
             return
-        match = re.fullmatch(r"/api/(directory-links|tasks|calendar-events|inbox|research-items)/(\d+)", path)
+        match = re.fullmatch(r"/api/(directory-links|projects|tasks|calendar-events|inbox|research-items)/(\d+)", path)
         if not match:
             self.send_error_json(HTTPStatus.NOT_FOUND, "接口不存在")
             return
@@ -670,6 +736,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     return
                 schedule.check_version(before, data)
                 changes = []
+                if table == "projects":
+                    for task in db.execute("SELECT id FROM tasks WHERE project_id=?", (record_id,)).fetchall():
+                        old = schedule.snapshot(db, "tasks", task["id"])
+                        db.execute("UPDATE tasks SET project_id=NULL, updated_at=? WHERE id=?", (utc_now(), task["id"]))
+                        changes.append(schedule.change(db, "tasks", old, task["id"]))
                 if table == "tasks":
                     for event in db.execute("SELECT id FROM calendar_events WHERE task_id=?", (record_id,)).fetchall():
                         old = schedule.snapshot(db, "calendar_events", event["id"])
@@ -791,6 +862,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 inbox = schedule.snapshot(db, "inbox", data["_inbox_id"]) if data.get("_inbox_id") else None
                 if data.get("_inbox_id"):
                     schedule.check_version(inbox, {"_version": data.get("_inbox_version")})
+                if table == "tasks" and values.get("project_id"):
+                    if not db.execute("SELECT 1 FROM projects WHERE id=?", (values["project_id"],)).fetchone():
+                        raise ValueError("所属项目不存在")
                 cursor = db.execute(
                     f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({placeholders})", params)
                 record_id = cursor.lastrowid
@@ -820,6 +894,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     self.send_error_json(HTTPStatus.NOT_FOUND, "记录不存在")
                     return
                 schedule.check_version(before, data)
+                if table == "tasks" and values.get("project_id"):
+                    if not db.execute("SELECT 1 FROM projects WHERE id=?", (values["project_id"],)).fetchone():
+                        raise ValueError("所属项目不存在")
                 if table == "tasks" and before["repeat_rule"] != "none" and before["status"] != "done":
                     if data.get("_scope") == "one":
                         template = {key: before[key] for key in values if key != "updated_at"}

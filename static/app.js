@@ -6,6 +6,7 @@ const state = {
   settings: {},
   directoryLinks: [],
   directoryCategories: [],
+  projects: [],
   tasks: [],
   calendarEvents: [],
   occurrences: [],
@@ -25,6 +26,7 @@ const state = {
   stats: {},
   directoryFilter: "全部",
   taskFilter: "all",
+  selectedProjectId: null,
   editor: { kind: "", id: null },
   commandItems: [],
   commandIndex: 0,
@@ -33,6 +35,7 @@ const state = {
 
 const labels = {
   taskStatus: { todo: "待处理", doing: "推进中", done: "已完成" },
+  projectStatus: { idea: "想法", active: "进行中", paused: "已暂停", done: "已完成", archived: "已归档" },
   priority: { low: "低", medium: "中", high: "高" },
 };
 
@@ -102,6 +105,7 @@ async function loadData({ quiet = false } = {}) {
     state.settings = data.settings || {};
     state.directoryLinks = data.directory_links || [];
     state.directoryCategories = data.directory_categories || [...new Set(state.directoryLinks.map((link) => link.category).filter(Boolean))];
+    state.projects = data.projects || [];
     state.tasks = data.tasks || [];
     state.calendarEvents = data.calendar_events || [];
     state.occurrences = data.occurrences || [];
@@ -136,7 +140,7 @@ function renderAll() {
   $("#profile-link").href = settings.github || "https://github.com/lyh843";
   $("#profile-link img").src = githubAvatar(settings.github);
 
-  $("#task-nav-count").textContent = state.stats.open_tasks ?? 0;
+  $("#task-nav-count").textContent = state.stats.open_projects ?? state.stats.open_tasks ?? 0;
   $("#directory-nav-count").textContent = state.stats.directory_links ?? state.directoryLinks.length;
   $("#directory-count").textContent = state.directoryLinks.length;
   renderOverview();
@@ -170,12 +174,16 @@ function renderOverview() {
     ? activeTasks.slice(0, 4).map((task) => `
       <article class="priority-item">
         <span class="priority-dot ${escapeHtml(task.priority)}" aria-hidden="true"></span>
-        <div class="priority-copy"><button class="priority-title" type="button" data-edit="tasks" data-id="${task.id}">${escapeHtml(task.title)}</button><span class="${isOverdue(task) ? "overdue" : ""}">${escapeHtml(task.course || "未分类")} · ${formatTaskTiming(task)}</span></div>
-        <button class="status-button auth-gated" type="button" data-advance-task="${task.id}" aria-label="${task.status === "todo" ? "开始" : "完成"}任务：${escapeHtml(task.title)}"><i data-lucide="arrow-right"></i>${labels.taskStatus[task.status]}</button>
+        <div class="priority-copy"><button class="priority-title" type="button" data-edit="tasks" data-id="${task.id}">${escapeHtml(task.title)}</button><span class="${isOverdue(task) ? "overdue" : ""}">${escapeHtml(projectForTask(task)?.title || task.course || "未归类推进项")} · ${formatTaskTiming(task)}</span></div>
+        <button class="status-button auth-gated" type="button" data-advance-task="${task.id}" aria-label="${task.status === "todo" ? "开始" : "完成"}推进项：${escapeHtml(task.title)}"><i data-lucide="arrow-right"></i>${labels.taskStatus[task.status]}</button>
       </article>`).join("")
     : emptyState("circle-check-big", "当前没有待办", "");
 
   renderOverviewCalendar();
+}
+
+function projectForTask(task) {
+  return state.projects.find((project) => project.id === Number(task.project_id));
 }
 
 function renderOverviewCalendar() {
@@ -259,40 +267,66 @@ function slugify(value) {
 }
 
 function renderTasks() {
-  const statuses = [
-    { key: "todo", title: "待处理" },
-    { key: "doing", title: "推进中" },
-    { key: "done", title: "已完成" },
-  ];
   const now = new Date();
-  const tasks = state.tasks.filter((task) => {
-    if (state.taskFilter === "high") return task.priority === "high" && task.status !== "done";
+  const unassignedItems = state.tasks.filter((task) => !task.project_id);
+  const unassignedProject = unassignedItems.length ? {
+    id: 0, virtual: true, title: "未归类推进项", outcome: "把已有推进项整理到具体项目中", status: "idea", priority: "medium",
+    blocker: "", due_date: "", variables: {}, item_count: unassignedItems.length,
+    completed_count: unassignedItems.filter((task) => task.status === "done").length,
+    progress: Math.round(unassignedItems.filter((task) => task.status === "done").length / unassignedItems.length * 100),
+  } : null;
+  const projectRows = unassignedProject ? [...state.projects, unassignedProject] : state.projects;
+  const visible = projectRows.filter((project) => {
+    if (state.taskFilter === "archived") return project.status === "archived";
+    if (state.taskFilter === "active") return project.status === "active";
+    if (state.taskFilter === "blocked") return Boolean(project.blocker) && project.status !== "done" && project.status !== "archived";
     if (state.taskFilter === "due") {
-      const due = taskDeadline(task);
-      return task.status !== "done" && due && due.getTime() - now.getTime() < 4 * 86400000;
+      if (project.virtual) return unassignedItems.some((task) => task.status !== "done" && taskDeadline(task) && taskDeadline(task).getTime() - now.getTime() < 7 * 86400000);
+      return project.status !== "done" && project.status !== "archived" && project.due_date && new Date(`${project.due_date}T23:59:59`).getTime() - now.getTime() < 7 * 86400000;
     }
-    return true;
+    return project.status !== "archived";
   });
-  $("#task-board").innerHTML = statuses.map((column) => {
-    const columnTasks = tasks.filter((task) => task.status === column.key);
-    return `<section class="kanban-column" aria-labelledby="column-${column.key}">
-      <header class="kanban-head"><div><h2 id="column-${column.key}">${column.title}</h2><span>${columnTasks.length}</span></div><button class="auth-only" type="button" data-action="add-task-status" data-status="${column.key}" aria-label="在${column.title}中新增任务"><i data-lucide="plus"></i></button></header>
-      <div class="task-list">${columnTasks.length ? columnTasks.map(taskCard).join("") : emptyState("inbox", "这里暂时为空", column.key === "done" ? "完成的任务会出现在这里" : "新增任务来开始推进")}</div>
-    </section>`;
-  }).join("");
+  if (state.selectedProjectId === null || !visible.some((project) => project.id === state.selectedProjectId)) state.selectedProjectId = visible[0]?.id ?? null;
+  $("#task-board").innerHTML = visible.length ? visible.map(projectCard).join("") : emptyState("folder-open", "还没有匹配的项目", "新建一个项目，或从收集箱转入");
+  renderProjectDetail();
   refreshIcons();
 }
 
-function taskCard(task) {
+function projectCard(project) {
+  const selected = project.id === state.selectedProjectId;
+  const due = project.due_date ? new Date(`${project.due_date}T23:59:59`) : null;
+  const dueClass = due && due < new Date() && !["done", "archived"].includes(project.status) ? "overdue" : "";
+  return `<button class="project-card ${selected ? "is-selected" : ""}" type="button" data-project-select="${project.id}">
+    <span class="project-card-mark ${escapeHtml(project.priority)}"></span>
+    <span class="project-card-main"><strong>${escapeHtml(project.title)}</strong><small>${escapeHtml(project.outcome || project.blocker || "尚未写下期望结果")}</small><span class="project-card-meta"><span>${escapeHtml(project.virtual ? "需要整理" : (labels.projectStatus[project.status] || project.status))}</span><span class="${dueClass}">${project.due_date ? `截止 ${escapeHtml(project.due_date)}` : `${project.item_count || 0} 项推进`}</span></span></span>
+    <span class="project-progress"><strong>${project.progress || 0}%</strong><span><i style="width:${project.progress || 0}%"></i></span></span>
+  </button>`;
+}
+
+function renderProjectDetail() {
+  const detail = $("#project-detail");
+  let project = state.projects.find((item) => item.id === state.selectedProjectId);
+  if (!project && state.selectedProjectId === 0) {
+    const items = state.tasks.filter((task) => !task.project_id);
+    project = { id: 0, virtual: true, title: "未归类推进项", outcome: "把已有推进项整理到具体项目中", status: "idea", priority: "medium", blocker: "", due_date: "", variables: {}, item_count: items.length, completed_count: items.filter((task) => task.status === "done").length, progress: items.length ? Math.round(items.filter((task) => task.status === "done").length / items.length * 100) : 0 };
+  }
+  if (!project) {
+    detail.innerHTML = emptyState("folder-plus", "选择或新建一个项目", "项目的目标、变量和推进项会显示在这里");
+    return;
+  }
+  const items = project.virtual ? state.tasks.filter((task) => !task.project_id) : state.tasks.filter((task) => Number(task.project_id) === project.id);
+  const variables = Object.entries(project.variables || {});
+  detail.innerHTML = `<div class="project-detail-head"><div><span class="section-code">${project.virtual ? "NEEDS ORGANIZING" : `PROJECT / ${String(project.id).padStart(2, "0")}`}</span><h2>${escapeHtml(project.title)}</h2><p>${escapeHtml(project.outcome || "尚未写下期望结果")}</p></div>${project.virtual ? "" : `<button class="icon-button auth-only" type="button" data-edit="projects" data-id="${project.id}" aria-label="编辑项目" data-tooltip="编辑项目"><i data-lucide="pencil"></i></button>`}</div>
+    <div class="project-status-line"><span class="status-chip ${escapeHtml(project.status)}">${escapeHtml(labels.projectStatus[project.status] || project.status)}</span><span class="priority-label">${escapeHtml(labels.priority[project.priority] || project.priority)}优先级</span>${project.due_date ? `<span class="${project.due_date < localDateKey(new Date()) && !["done", "archived"].includes(project.status) ? "overdue" : ""}"><i data-lucide="calendar-days"></i>${escapeHtml(project.due_date)}</span>` : ""}</div>
+    <div class="project-progress-large"><div><span>推进进度</span><strong>${project.progress || 0}%</strong></div><span><i style="width:${project.progress || 0}%"></i></span><small>${project.completed_count || 0} / ${project.item_count || 0} 项已完成</small></div>
+    ${project.blocker ? `<div class="project-blocker"><i data-lucide="triangle-alert"></i><div><span>当前阻塞</span><strong>${escapeHtml(project.blocker)}</strong></div></div>` : ""}
+    <section class="project-variables"><div class="section-heading compact"><h3>项目变量</h3>${project.virtual ? "" : `<button class="text-button auth-gated" type="button" data-edit="projects" data-id="${project.id}"><i data-lucide="pencil"></i>编辑</button>`}</div>${variables.length ? `<dl>${variables.map(([key, value]) => `<div><dt>${escapeHtml(key)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl>` : `<p class="muted">还没有自定义变量</p>`}</section>
+    <section class="project-items"><div class="section-heading compact"><div><span class="section-code">NEXT ACTIONS</span><h3>推进项 <span class="muted">${items.length}</span></h3></div>${project.virtual ? "" : `<button class="text-button auth-gated" type="button" data-project-add="${project.id}"><i data-lucide="plus"></i>添加推进项</button>`}</div>${items.length ? `<div class="project-item-list">${items.map(projectItem).join("")}</div>` : emptyState("list-plus", "项目还没有推进项", "先拆出一个可以马上行动的步骤")}</section>`;
+}
+
+function projectItem(task) {
   const dueClass = isOverdue(task) ? "overdue" : "";
-  const nextLabel = task.status === "todo" ? "开始" : task.status === "doing" ? "完成" : "已完成";
-  const timingIcon = task.end_at ? "clock-3" : "calendar-days";
-  return `<article class="task-card">
-    <div class="task-card-top"><span class="priority-mark ${escapeHtml(task.priority)}" title="${labels.priority[task.priority]}优先级"></span><button class="task-edit auth-only" type="button" data-edit="tasks" data-id="${task.id}" aria-label="编辑任务"><i data-lucide="more-horizontal"></i></button></div>
-    <h3>${escapeHtml(task.title)}</h3><p>${escapeHtml(task.notes || task.course || "暂无备注")}</p>
-    <div class="task-card-meta"><span class="due ${dueClass}"><i data-lucide="${timingIcon}"></i>${formatTaskTiming(task)}</span><button class="advance-button auth-gated" type="button" data-advance-task="${task.id}" ${task.status === "done" ? "disabled" : ""}>${task.skipped ? "已跳过" : nextLabel}<i data-lucide="chevron-right"></i></button></div>
-    ${task.status !== "done" ? `<div class="row-actions"><button type="button" class="text-button" data-plan-task="${task.id}"><i data-lucide="calendar-plus"></i>安排时间</button>${task.repeat_rule && task.repeat_rule !== "none" ? `<button type="button" class="text-button" data-skip-task="${task.id}"><i data-lucide="skip-forward"></i>跳过本次</button>` : ""}</div>` : ""}
-  </article>`;
+  return `<article class="project-item ${task.status === "done" ? "is-done" : ""}"><button class="project-item-toggle" type="button" data-advance-task="${task.id}" ${task.status === "done" ? "disabled" : ""} aria-label="${task.status === "done" ? "已完成" : "推进"} ${escapeHtml(task.title)}"><i data-lucide="${task.status === "done" ? "circle-check" : task.status === "doing" ? "circle-dot" : "circle"}"></i></button><div><button class="project-item-title" type="button" data-edit="tasks" data-id="${task.id}">${escapeHtml(task.title)}</button><small class="${dueClass}">${escapeHtml(labels.taskStatus[task.status])} · ${escapeHtml(formatTaskTiming(task))}</small></div><div class="row-actions">${task.status !== "done" ? `<button class="icon-button" type="button" data-plan-task="${task.id}" aria-label="安排 ${escapeHtml(task.title)}" data-tooltip="安排到日历"><i data-lucide="calendar-plus"></i></button>` : ""}<button class="icon-button" type="button" data-edit="tasks" data-id="${task.id}" aria-label="编辑推进项" data-tooltip="编辑"><i data-lucide="more-horizontal"></i></button></div></article>`;
 }
 
 const calendarWeekdays = ["一", "二", "三", "四", "五", "六", "日"];
@@ -470,7 +504,7 @@ function formatDue(value) {
 }
 
 function navigate(route) {
-  const routeLabels = { overview: "概览", directory: "网址导航", tasks: "任务", calendar: "日历", research: "论文发现", settings: "设置" };
+  const routeLabels = { overview: "概览", directory: "网址导航", tasks: "项目推进", calendar: "日历", research: "论文发现", settings: "设置" };
   const target = Object.hasOwn(routeLabels, route) ? route : "overview";
   $$("[data-view]").forEach((view) => view.classList.toggle("is-active", view.dataset.view === target));
   $$("[data-route]").forEach((item) => {
@@ -500,8 +534,19 @@ function showLogin() {
   setTimeout(() => $("#login-password").focus(), 50);
 }
 
+function projectEditorFields(record = {}) {
+  const variables = Object.entries(record.variables || {}).map(([key, value]) => `${key}=${value}`).join("\n");
+  return `<label class="field"><span>项目名称 *</span><input name="title" maxlength="160" required value="${escapeHtml(record.title)}" placeholder="例如：完成模型压缩实验"></label>
+    <label class="field"><span>期望结果</span><textarea name="outcome" maxlength="500" placeholder="完成后要得到什么？">${escapeHtml(record.outcome)}</textarea></label>
+    <div class="field-row"><label class="field"><span>状态</span><select name="status">${Object.entries(labels.projectStatus).map(([key, label]) => `<option value="${key}" ${(record.status || "idea") === key ? "selected" : ""}>${label}</option>`).join("")}</select></label><label class="field"><span>优先级</span><select name="priority">${Object.entries(labels.priority).map(([key, label]) => `<option value="${key}" ${(record.priority || "medium") === key ? "selected" : ""}>${label}</option>`).join("")}</select></label></div>
+    <div class="field-row"><label class="field"><span>截止日期</span><input name="due_date" type="date" value="${escapeHtml(record.due_date)}"></label><label class="field"><span>当前阻塞</span><input name="blocker" maxlength="500" value="${escapeHtml(record.blocker)}" placeholder="没有就留空"></label></div>
+    <label class="field"><span>项目变量</span><textarea name="variables" maxlength="6000" placeholder="每行一个，格式：变量名=变量值">${escapeHtml(variables)}</textarea><small class="field-hint">例如：目标指标=Accuracy &gt; 92%</small></label>
+    <label class="field"><span>项目备注</span><textarea name="notes" maxlength="2000" placeholder="记录背景、链接或判断">${escapeHtml(record.notes)}</textarea></label>`;
+}
+
 function editorFields(kind, record = {}) {
   if (kind === "inbox") return `<label class="field"><span>收集内容</span><textarea name="title" maxlength="1000" required>${escapeHtml(record.title)}</textarea></label>`;
+  if (kind === "projects") return projectEditorFields(record);
   if (kind === "directoryCategories") return `
     <label class="field"><span>分类名称 *</span><input name="name" maxlength="30" required placeholder="例如：科研工具"></label>`;
   if (kind === "directoryLinks") return `
@@ -558,7 +603,7 @@ function openEditor(kind, id = null, defaults = {}) {
     const base = id === null ? {} : state[kind].find((item) => item.id === Number(id)) || {};
     const record = { ...base, ...defaults };
     state.editor = { kind, id: id === null ? null : Number(id), version: base.updated_at, occurrence: defaults._occurrence || base.start_at, inboxId: defaults._inbox_id, inboxVersion: defaults._inbox_version };
-    const nouns = { directoryLinks: "导航站点", directoryCategories: "分类", tasks: "任务", calendarEvents: "日程", settings: "工作台设置", inbox: "收集内容" };
+    const nouns = { directoryLinks: "导航站点", directoryCategories: "分类", projects: "项目", tasks: "推进项", calendarEvents: "日程", settings: "工作台设置", inbox: "收集内容" };
     $("#editor-code").textContent = kind === "settings" ? "WORKSPACE PROFILE" : id === null ? "NEW ITEM" : "EDIT ITEM";
     $("#editor-title").textContent = kind === "settings" ? nouns[kind] : `${id === null ? "新增" : "编辑"}${nouns[kind]}`;
     $("#editor-fields").innerHTML = editorFields(kind, record);
@@ -583,6 +628,12 @@ async function saveEditor(event) {
   data._inbox_id = state.editor.inboxId;
   data._inbox_version = state.editor.inboxVersion;
   data.repeat_weekdays = new FormData(form).getAll("repeat_weekdays").join(",");
+  if (kind === "projects") {
+    data.variables = Object.fromEntries(String(data.variables || "").split("\n").map((line) => line.trim()).filter(Boolean).map((line) => {
+      const separator = line.indexOf("=");
+      return separator < 1 ? [line, ""] : [line.slice(0, separator).trim(), line.slice(separator + 1).trim()];
+    }));
+  }
   if (kind === "calendarEvents") {
     data.all_day = data.all_day === "true";
     data.start_at = `${data.start_date}T${data.all_day ? "00:00" : data.start_time}`;
@@ -705,15 +756,16 @@ function commandItems(query = "") {
   const pages = [
     { icon: "layout-dashboard", title: "概览", meta: "页面", route: "overview" },
     { icon: "calendar-days", title: "日历", meta: "页面", route: "calendar" },
-    { icon: "list-checks", title: "任务", meta: "页面", route: "tasks" },
+    { icon: "folder-kanban", title: "项目推进", meta: "页面", route: "tasks" },
     { icon: "compass", title: "网址导航", meta: "页面", route: "directory" },
     { icon: "telescope", title: "论文发现", meta: "页面", route: "research" },
     { icon: "settings-2", title: "设置", meta: "页面", route: "settings" },
   ];
   const directoryLinks = state.directoryLinks.map((item) => ({ icon: safeIcon(item.icon), title: item.title, meta: `网址导航 · ${item.category}`, url: item.url }));
-  const tasks = state.tasks.map((item) => ({ icon: "circle-check", title: item.title, meta: `任务 · ${labels.taskStatus[item.status]}`, route: "tasks" }));
+  const projects = state.projects.map((item) => ({ icon: "folder", title: item.title, meta: `项目 · ${labels.projectStatus[item.status] || item.status}`, route: "tasks" }));
+  const tasks = state.tasks.map((item) => ({ icon: "circle-check", title: item.title, meta: `推进项 · ${projectForTask(item)?.title || "未归类"}`, route: "tasks" }));
   const calendarEvents = state.calendarEvents.map((item) => ({ icon: "calendar-clock", title: item.title, meta: `日程 · ${item.start_at.replace("T", " ")}`, route: "calendar" }));
-  return [...pages, ...directoryLinks, ...tasks, ...calendarEvents].filter((item) => !normalized || `${item.title} ${item.meta}`.toLowerCase().includes(normalized)).slice(0, 12);
+  return [...pages, ...projects, ...directoryLinks, ...tasks, ...calendarEvents].filter((item) => !normalized || `${item.title} ${item.meta}`.toLowerCase().includes(normalized)).slice(0, 12);
 }
 
 function openCommand() {
@@ -781,6 +833,10 @@ function bindEvents() {
     if (add) { openEditor(add.dataset.kind); return; }
     const addStatus = event.target.closest("[data-action=add-task-status]");
     if (addStatus) { openEditor("tasks", null, { status: addStatus.dataset.status }); return; }
+    const projectSelect = event.target.closest("[data-project-select]");
+    if (projectSelect) { state.selectedProjectId = Number(projectSelect.dataset.projectSelect); renderTasks(); return; }
+    const projectAdd = event.target.closest("[data-project-add]");
+    if (projectAdd) { openEditor("tasks", null, { project_id: Number(projectAdd.dataset.projectAdd), status: "todo" }); return; }
     const edit = event.target.closest("[data-edit]");
     if (edit) { openEditor(edit.dataset.edit, edit.dataset.id); return; }
     const advance = event.target.closest("[data-advance-task]");
