@@ -3,6 +3,7 @@
 const state = {
   authenticated: false,
   csrfToken: "",
+  user: null,
   settings: {},
   directoryLinks: [],
   directoryCategories: [],
@@ -67,7 +68,45 @@ function refreshIcons() {
   if (window.lucide) window.lucide.createIcons({ attrs: { "aria-hidden": "true" } });
 }
 
+function recordId(value) {
+  return String(value).startsWith("shared:") ? String(value) : Number(value);
+}
+
+function accountRequest(path, options) {
+  let body = options.body ? JSON.parse(options.body) : null;
+  const match = path.match(/^\/api\/(projects|tasks)\/shared:(\d+):(\d+)(?::(\d+))?$/);
+  if (match) {
+    path = `/api/shared/${match[2]}/${match[3]}/${match[1]}/${match[4] || match[3]}`;
+    if (body?.project_id) body.project_id = Number(match[3]);
+  } else if (path === "/api/tasks" && String(body?.project_id).startsWith("shared:")) {
+    const [, owner, project] = body.project_id.split(":");
+    path = `/api/shared/${owner}/${project}/tasks`;
+    body.project_id = Number(project);
+  }
+  return [path, body ? { ...options, body: JSON.stringify(body) } : options];
+}
+
+function clearAccountState({ invalidate = true, render = true } = {}) {
+  if (invalidate) state.loadSequence++;
+  state.authenticated = false; state.csrfToken = ""; state.user = null;
+  for (const key of ["directoryLinks", "directoryCategories", "projects", "tasks", "calendarEvents", "occurrences", "reminders", "inbox", "history", "researchItems"]) state[key] = [];
+  state.settings = {}; state.llmSettings = {}; state.stats = {};
+  state.selectedProjectId = null; state.researchSelected = null;
+  state.feedRefreshing = false; state.researchBusy = false;
+  calendarData = []; calendarDataKey = ""; calendarRenderKey = ""; settingsLoaded = false; notifiedReminders = null;
+  interactiveCalendar?.removeAllEvents();
+  for (const dialog of $$("dialog[open]")) dialog.close();
+  for (const selector of ["#llm-form", "#password-form", "#create-account-form", "#member-form"]) $(selector)?.reset();
+  $("#editor-fields").innerHTML = "";
+  $("#member-list").innerHTML = "";
+  $("#account-list").innerHTML = "";
+  $("#login-password").value = "";
+  $("#toast-region").innerHTML = "";
+  if (render) renderAll();
+}
+
 async function api(path, options = {}) {
+  [path, options] = accountRequest(path, options);
   const method = options.method || "GET";
   const headers = { ...(options.headers || {}) };
   if (options.body) headers["Content-Type"] = "application/json";
@@ -78,7 +117,7 @@ async function api(path, options = {}) {
     const contentType = response.headers.get("content-type") || "";
     const payload = contentType.includes("application/json") ? await response.json() : null;
     if (!response.ok) {
-      if (response.status === 401 && path !== "/api/login") showLogin();
+      if (response.status === 401 && path !== "/api/login") { clearAccountState(); showLogin(); }
       throw new Error(payload?.error || `请求失败 (${response.status})`);
     }
     setConnectionState("online");
@@ -100,7 +139,9 @@ async function loadData({ quiet = false } = {}) {
   try {
     const data = await api("/api/bootstrap");
     if (sequence !== state.loadSequence) return;
+    if (!data.authenticated || data.user?.id !== state.user?.id) clearAccountState({ invalidate: false, render: false });
     state.authenticated = data.authenticated;
+    state.user = data.user;
     state.csrfToken = data.csrf_token;
     state.settings = data.settings || {};
     state.directoryLinks = data.directory_links || [];
@@ -134,11 +175,13 @@ function renderAll() {
     : '<i data-lucide="lock-keyhole"></i><span>登录</span>';
 
   const settings = state.settings;
-  $("#display-name").textContent = settings.display_name || "LYH";
-  $("#sidebar-name").textContent = settings.display_name || "LYH";
+  $("#display-name").textContent = settings.display_name || "Research Desk";
+  $("#sidebar-name").textContent = settings.display_name || "Research Desk";
   $("#sidebar-role").textContent = settings.role || "个人日程";
-  $("#profile-link").href = settings.github || "https://github.com/lyh843";
+  $("#profile-link").href = settings.github || "#settings";
+  $("#profile-link").target = settings.github ? "_blank" : "_self";
   $("#profile-link img").src = githubAvatar(settings.github);
+  $("#profile-link img").alt = `${settings.display_name || "Research Desk"} 的头像`;
 
   $("#task-nav-count").textContent = state.stats.open_projects ?? state.stats.open_tasks ?? 0;
   $("#directory-nav-count").textContent = state.stats.directory_links ?? state.directoryLinks.length;
@@ -153,7 +196,7 @@ function renderAll() {
 
 function githubAvatar(url) {
   const match = String(url || "").match(/github\.com\/([^/?#]+)/i);
-  return match ? `https://github.com/${encodeURIComponent(match[1])}.png?size=96` : "https://github.com/lyh843.png?size=96";
+  return match ? `https://github.com/${encodeURIComponent(match[1])}.png?size=96` : "/avatar.svg";
 }
 
 function renderOverview() {
@@ -175,7 +218,7 @@ function renderOverview() {
       <article class="priority-item">
         <span class="priority-dot ${escapeHtml(task.priority)}" aria-hidden="true"></span>
         <div class="priority-copy"><button class="priority-title" type="button" data-edit="tasks" data-id="${task.id}">${escapeHtml(task.title)}</button><span class="${isOverdue(task) ? "overdue" : ""}">${escapeHtml(projectForTask(task)?.title || task.course || "未归类推进项")} · ${formatTaskTiming(task)}</span></div>
-        <button class="status-button auth-gated" type="button" data-advance-task="${task.id}" aria-label="${task.status === "todo" ? "开始" : "完成"}推进项：${escapeHtml(task.title)}"><i data-lucide="arrow-right"></i>${labels.taskStatus[task.status]}</button>
+        <button class="status-button auth-gated" type="button" data-advance-task="${task.id}" ${task.permission === "view" ? "disabled" : ""} aria-label="${task.status === "todo" ? "开始" : "完成"}推进项：${escapeHtml(task.title)}"><i data-lucide="arrow-right"></i>${labels.taskStatus[task.status]}</button>
       </article>`).join("")
     : emptyState("circle-check-big", "当前没有待办", "");
 
@@ -183,7 +226,7 @@ function renderOverview() {
 }
 
 function projectForTask(task) {
-  return state.projects.find((project) => project.id === Number(task.project_id));
+  return state.projects.find((project) => project.id === recordId(task.project_id));
 }
 
 function renderOverviewCalendar() {
@@ -314,19 +357,19 @@ function renderProjectDetail() {
     detail.innerHTML = emptyState("folder-plus", "选择或新建一个项目", "项目的目标、变量和推进项会显示在这里");
     return;
   }
-  const items = project.virtual ? state.tasks.filter((task) => !task.project_id) : state.tasks.filter((task) => Number(task.project_id) === project.id);
+  const items = project.virtual ? state.tasks.filter((task) => !task.project_id) : state.tasks.filter((task) => recordId(task.project_id) === project.id);
   const variables = Object.entries(project.variables || {});
-  detail.innerHTML = `<div class="project-detail-head"><div><span class="section-code">${project.virtual ? "NEEDS ORGANIZING" : `PROJECT / ${String(project.id).padStart(2, "0")}`}</span><h2>${escapeHtml(project.title)}</h2><p>${escapeHtml(project.outcome || "尚未写下期望结果")}</p></div>${project.virtual ? "" : `<button class="icon-button auth-only" type="button" data-edit="projects" data-id="${project.id}" aria-label="编辑项目" data-tooltip="编辑项目"><i data-lucide="pencil"></i></button>`}</div>
-    <div class="project-status-line"><span class="status-chip ${escapeHtml(project.status)}">${escapeHtml(labels.projectStatus[project.status] || project.status)}</span><span class="priority-label">${escapeHtml(labels.priority[project.priority] || project.priority)}优先级</span>${project.due_date ? `<span class="${project.due_date < localDateKey(new Date()) && !["done", "archived"].includes(project.status) ? "overdue" : ""}"><i data-lucide="calendar-days"></i>${escapeHtml(project.due_date)}</span>` : ""}</div>
+  detail.innerHTML = `<div class="project-detail-head"><div><span class="section-code">${project.virtual ? "NEEDS ORGANIZING" : project.shared ? "SHARED PROJECT" : `PROJECT / ${String(project.id).padStart(2, "0")}`}</span><h2>${escapeHtml(project.title)}</h2><p>${escapeHtml(project.outcome || "尚未写下期望结果")}</p></div>${project.virtual || project.permission === "view" ? "" : `<button class="icon-button auth-only" type="button" data-edit="projects" data-id="${project.id}" aria-label="编辑项目" data-tooltip="编辑项目"><i data-lucide="pencil"></i></button>`}</div>
+    ${project.permission === "view" ? `<button class="secondary-button" type="button" data-edit="projects" data-id="${project.id}">查看项目详情</button>` : ""}${!project.virtual && !project.shared ? `<button class="secondary-button" type="button" data-project-members="${project.id}">共享与成员</button>` : ""}${project.shared ? `<p class="muted">由 ${escapeHtml(project.owner_name)} 共享 · ${project.permission === "edit" ? "可编辑" : "仅查看"}</p>` : ""}<div class="project-status-line"><span class="status-chip ${escapeHtml(project.status)}">${escapeHtml(labels.projectStatus[project.status] || project.status)}</span><span class="priority-label">${escapeHtml(labels.priority[project.priority] || project.priority)}优先级</span>${project.due_date ? `<span class="${project.due_date < localDateKey(new Date()) && !["done", "archived"].includes(project.status) ? "overdue" : ""}"><i data-lucide="calendar-days"></i>${escapeHtml(project.due_date)}</span>` : ""}</div>
     <div class="project-progress-large"><div><span>推进进度</span><strong>${project.progress || 0}%</strong></div><span><i style="width:${project.progress || 0}%"></i></span><small>${project.completed_count || 0} / ${project.item_count || 0} 项已完成</small></div>
     ${project.blocker ? `<div class="project-blocker"><i data-lucide="triangle-alert"></i><div><span>当前阻塞</span><strong>${escapeHtml(project.blocker)}</strong></div></div>` : ""}
-    <section class="project-variables"><div class="section-heading compact"><h3>项目变量</h3>${project.virtual ? "" : `<button class="text-button auth-gated" type="button" data-edit="projects" data-id="${project.id}"><i data-lucide="pencil"></i>编辑</button>`}</div>${variables.length ? `<dl>${variables.map(([key, value]) => `<div><dt>${escapeHtml(key)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl>` : `<p class="muted">还没有自定义变量</p>`}</section>
-    <section class="project-items"><div class="section-heading compact"><div><span class="section-code">NEXT ACTIONS</span><h3>推进项 <span class="muted">${items.length}</span></h3></div>${project.virtual ? "" : `<button class="text-button auth-gated" type="button" data-project-add="${project.id}"><i data-lucide="plus"></i>添加推进项</button>`}</div>${items.length ? `<div class="project-item-list">${items.map(projectItem).join("")}</div>` : emptyState("list-plus", "项目还没有推进项", "先拆出一个可以马上行动的步骤")}</section>`;
+    <section class="project-variables"><div class="section-heading compact"><h3>项目变量</h3>${project.virtual || project.permission === "view" ? "" : `<button class="text-button auth-gated" type="button" data-edit="projects" data-id="${project.id}"><i data-lucide="pencil"></i>编辑</button>`}</div>${variables.length ? `<dl>${variables.map(([key, value]) => `<div><dt>${escapeHtml(key)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl>` : `<p class="muted">还没有自定义变量</p>`}</section>
+    <section class="project-items"><div class="section-heading compact"><div><span class="section-code">NEXT ACTIONS</span><h3>推进项 <span class="muted">${items.length}</span></h3></div>${project.virtual || project.permission === "view" ? "" : `<button class="text-button auth-gated" type="button" data-project-add="${project.id}"><i data-lucide="plus"></i>添加推进项</button>`}</div>${items.length ? `<div class="project-item-list">${items.map(projectItem).join("")}</div>` : emptyState("list-plus", "项目还没有推进项", "先拆出一个可以马上行动的步骤")}</section>`;
 }
 
 function projectItem(task) {
   const dueClass = isOverdue(task) ? "overdue" : "";
-  return `<article class="project-item ${task.status === "done" ? "is-done" : ""}"><button class="project-item-toggle" type="button" data-advance-task="${task.id}" ${task.status === "done" ? "disabled" : ""} aria-label="${task.status === "done" ? "已完成" : "推进"} ${escapeHtml(task.title)}"><i data-lucide="${task.status === "done" ? "circle-check" : task.status === "doing" ? "circle-dot" : "circle"}"></i></button><div><button class="project-item-title" type="button" data-edit="tasks" data-id="${task.id}">${escapeHtml(task.title)}</button><small class="${dueClass}">${escapeHtml(labels.taskStatus[task.status])} · ${escapeHtml(formatTaskTiming(task))}</small></div><div class="row-actions">${task.status !== "done" ? `<button class="icon-button" type="button" data-plan-task="${task.id}" aria-label="安排 ${escapeHtml(task.title)}" data-tooltip="安排到日历"><i data-lucide="calendar-plus"></i></button>` : ""}<button class="icon-button" type="button" data-edit="tasks" data-id="${task.id}" aria-label="编辑推进项" data-tooltip="编辑"><i data-lucide="more-horizontal"></i></button></div></article>`;
+  return `<article class="project-item ${task.status === "done" ? "is-done" : ""}"><button class="project-item-toggle" type="button" data-advance-task="${task.id}" ${task.status === "done" || task.permission === "view" ? "disabled" : ""} aria-label="${task.status === "done" ? "已完成" : "推进"} ${escapeHtml(task.title)}"><i data-lucide="${task.status === "done" ? "circle-check" : task.status === "doing" ? "circle-dot" : "circle"}"></i></button><div><button class="project-item-title" type="button" data-edit="tasks" data-id="${task.id}">${escapeHtml(task.title)}</button><small class="${dueClass}">${escapeHtml(labels.taskStatus[task.status])} · ${escapeHtml(formatTaskTiming(task))}</small></div><div class="row-actions">${task.status !== "done" ? `<button class="icon-button" type="button" data-plan-task="${task.id}" aria-label="安排 ${escapeHtml(task.title)}" data-tooltip="安排到日历"><i data-lucide="calendar-plus"></i></button>` : ""}<button class="icon-button" type="button" data-edit="tasks" data-id="${task.id}" aria-label="${task.permission === "view" ? "查看推进项" : "编辑推进项"}" data-tooltip="${task.permission === "view" ? "详情" : "编辑"}"><i data-lucide="more-horizontal"></i></button></div></article>`;
 }
 
 const calendarWeekdays = ["一", "二", "三", "四", "五", "六", "日"];
@@ -572,7 +615,7 @@ function editorFields(kind, record = {}) {
       </div>
       ${repeatEditorFields(record)}
       ${record.id && record.repeat_rule !== "none" ? `<label class="field"><span>修改范围</span><select name="_scope"><option value="one">仅本次</option><option value="following">本次及以后</option><option value="all">整个系列（清除已有例外）</option></select></label>` : ""}
-      <div class="field-row"><label class="field"><span>关联任务</span><select name="task_id"><option value="">无</option>${state.tasks.filter((task) => task.status !== "done" || task.id === record.task_id).map((task) => `<option value="${task.id}" ${task.id === Number(record.task_id) ? "selected" : ""}>${escapeHtml(task.title)}</option>`).join("")}</select></label><label class="field"><span>站内提醒</span><select name="reminder_minutes">${[[-1,"不提醒"],[0,"开始时"],[5,"提前 5 分钟"],[15,"提前 15 分钟"],[30,"提前 30 分钟"],[60,"提前 1 小时"],[1440,"提前 1 天"]].map(([value,label]) => `<option value="${value}" ${Number(record.reminder_minutes ?? 15) === value ? "selected" : ""}>${label}</option>`).join("")}</select></label></div>
+      <div class="field-row"><label class="field"><span>关联任务</span><select name="task_id"><option value="">无</option>${state.tasks.filter((task) => !task.shared && (task.status !== "done" || task.id === record.task_id)).map((task) => `<option value="${task.id}" ${task.id === Number(record.task_id) ? "selected" : ""}>${escapeHtml(task.title)}</option>`).join("")}</select></label><label class="field"><span>站内提醒</span><select name="reminder_minutes">${[[-1,"不提醒"],[0,"开始时"],[5,"提前 5 分钟"],[15,"提前 15 分钟"],[30,"提前 30 分钟"],[60,"提前 1 小时"],[1440,"提前 1 天"]].map(([value,label]) => `<option value="${value}" ${Number(record.reminder_minutes ?? 15) === value ? "selected" : ""}>${label}</option>`).join("")}</select></label></div>
       <div class="field-row"><label class="field"><span>所属日历</span><input name="calendar_name" maxlength="40" value="${escapeHtml(record.calendar_name || "个人日历")}" placeholder="个人日历"></label><label class="field"><span>地点</span><input name="location" maxlength="200" value="${escapeHtml(record.location)}" placeholder="教室、会议室或线上链接"></label></div>
       <label class="field"><span>说明</span><textarea name="description" maxlength="2000" placeholder="记录议程、材料或准备事项">${escapeHtml(record.description)}</textarea></label>
       <input name="timezone" type="hidden" value="${escapeHtml(record.timezone || "Asia/Shanghai")}">
@@ -600,20 +643,23 @@ function iconOptions(selected) {
 
 function openEditor(kind, id = null, defaults = {}) {
   requireAuth(() => {
-    const base = id === null ? {} : state[kind].find((item) => item.id === Number(id)) || {};
+    const base = id === null ? {} : state[kind].find((item) => item.id === recordId(id)) || {};
+    const readOnly = base.permission === "view";
     const record = { ...base, ...defaults };
-    state.editor = { kind, id: id === null ? null : Number(id), version: base.updated_at, occurrence: defaults._occurrence || base.start_at, inboxId: defaults._inbox_id, inboxVersion: defaults._inbox_version };
+    state.editor = { kind, id: id === null ? null : recordId(id), version: base.updated_at, occurrence: defaults._occurrence || base.start_at, inboxId: defaults._inbox_id, inboxVersion: defaults._inbox_version };
     const nouns = { directoryLinks: "导航站点", directoryCategories: "分类", projects: "项目", tasks: "推进项", calendarEvents: "日程", settings: "工作台设置", inbox: "收集内容" };
-    $("#editor-code").textContent = kind === "settings" ? "WORKSPACE PROFILE" : id === null ? "NEW ITEM" : "EDIT ITEM";
-    $("#editor-title").textContent = kind === "settings" ? nouns[kind] : `${id === null ? "新增" : "编辑"}${nouns[kind]}`;
+    $("#editor-code").textContent = kind === "settings" ? "WORKSPACE PROFILE" : readOnly ? "VIEW ITEM" : id === null ? "NEW ITEM" : "EDIT ITEM";
+    $("#editor-title").textContent = kind === "settings" ? nouns[kind] : `${readOnly ? "查看" : id === null ? "新增" : "编辑"}${nouns[kind]}`;
     $("#editor-fields").innerHTML = editorFields(kind, record);
-    $("#delete-button").hidden = id === null || kind === "settings";
+    $("#delete-button").hidden = readOnly || id === null || kind === "settings" || (kind === "projects" && base.shared);
+    $("#save-button").hidden = readOnly;
     $("#duplicate-button").hidden = kind !== "calendarEvents" || id === null;
     $("#save-button").textContent = id === null && kind !== "settings" ? "添加" : "保存更改";
     $("#editor-modal").showModal();
     refreshIcons();
     if (kind === "calendarEvents") syncEventAllDayFields();
     syncRepeatFields();
+    if (readOnly) $$("input,select,textarea", $("#editor-fields")).forEach((input) => { input.disabled = true; });
     requestAnimationFrame(() => {
       const firstField = $("#editor-fields [autofocus]") || $("#editor-fields input, #editor-fields textarea, #editor-fields select");
       firstField?.focus({ preventScroll: true });
@@ -690,8 +736,8 @@ async function deleteEditor() {
 
 async function advanceTask(id) {
   requireAuth(async () => {
-    const task = state.tasks.find((item) => item.id === Number(id));
-    if (!task || task.status === "done") return;
+    const task = state.tasks.find((item) => item.id === recordId(id));
+    if (!task || task.status === "done" || task.permission === "view") return;
     const updated = { ...task, _version: task.updated_at, status: task.status === "todo" ? "doing" : "done" };
     try {
       const result = await api(`/api/tasks/${task.id}`, { method: "PUT", body: JSON.stringify(updated) });
@@ -708,7 +754,8 @@ async function login(event) {
   submit.disabled = true;
   $("#login-error").textContent = "";
   try {
-    const data = await api("/api/login", { method: "POST", body: JSON.stringify({ password, remember: $("#remember-browser").checked }) });
+    const data = await api("/api/login", { method: "POST", body: JSON.stringify({ username: $("#login-username").value, password, remember: $("#remember-browser").checked }) });
+    $("#login-password").value = "";
     state.csrfToken = data.csrf_token;
     $("#login-modal").close();
     await loadData({ quiet: true });
@@ -722,8 +769,7 @@ async function login(event) {
 async function logout() {
   try {
     await api("/api/logout", { method: "POST", body: "{}" });
-    state.authenticated = false;
-    state.csrfToken = "";
+    clearAccountState();
     await loadData({ quiet: true });
     toast("已退出登录");
   } catch (error) { toast(error.message, true); }
@@ -828,6 +874,7 @@ function submitWebSearch(event) {
 
 function bindEvents() {
   bindWorkbench();
+  bindAccounts();
   window.addEventListener("hashchange", () => navigate(location.hash.slice(1)));
   document.addEventListener("click", (event) => {
     const route = event.target.closest("[data-route]");
@@ -837,9 +884,9 @@ function bindEvents() {
     const addStatus = event.target.closest("[data-action=add-task-status]");
     if (addStatus) { openEditor("tasks", null, { status: addStatus.dataset.status }); return; }
     const projectSelect = event.target.closest("[data-project-select]");
-    if (projectSelect) { state.selectedProjectId = Number(projectSelect.dataset.projectSelect); renderTasks(); return; }
+    if (projectSelect) { state.selectedProjectId = recordId(projectSelect.dataset.projectSelect); renderTasks(); return; }
     const projectAdd = event.target.closest("[data-project-add]");
-    if (projectAdd) { openEditor("tasks", null, { project_id: Number(projectAdd.dataset.projectAdd), status: "todo" }); return; }
+    if (projectAdd) { openEditor("tasks", null, { project_id: recordId(projectAdd.dataset.projectAdd), status: "todo" }); return; }
     const edit = event.target.closest("[data-edit]");
     if (edit) { openEditor(edit.dataset.edit, edit.dataset.id); return; }
     const advance = event.target.closest("[data-advance-task]");

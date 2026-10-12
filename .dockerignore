@@ -1,6 +1,20 @@
 .git
 .env
+.env.*
 data
+.venv
+venv
+.planning
+backups
+logs
+.vscode
+.idea
 __pycache__
 *.pyc
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+*.sqlite*
+*.log
 
