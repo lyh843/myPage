@@ -15,6 +15,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from contextlib import closing
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,7 +30,7 @@ def free_port() -> int:
 
 def prepare_legacy_tasks_schema(data_dir: str) -> None:
     """Exercise the in-place migration used by existing installations."""
-    with sqlite3.connect(Path(data_dir) / "workspace.db") as db:
+    with closing(sqlite3.connect(Path(data_dir) / "workspace.db")) as db, db:
         db.execute(
             """CREATE TABLE tasks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -90,7 +91,7 @@ def main() -> None:
             assert not {"links", "papers", "focus_sessions"} & bootstrap.keys()
             assert not {"focus_minutes", "focus_target", "reading_papers"} & bootstrap["stats"].keys()
             assert "focus_target" not in bootstrap["settings"]
-            with sqlite3.connect(Path(data_dir) / "workspace.db") as db:
+            with closing(sqlite3.connect(Path(data_dir) / "workspace.db")) as db, db:
                 tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
                 assert not {"links", "papers", "focus_sessions"} & tables
                 for table in ("links", "papers", "focus_sessions"):
@@ -173,7 +174,7 @@ def main() -> None:
                     payload={"name": name},
                     csrf=csrf,
                 )
-            with sqlite3.connect(Path(data_dir) / "workspace.db") as db:
+            with closing(sqlite3.connect(Path(data_dir) / "workspace.db")) as db, db:
                 assert db.execute(
                     "SELECT name FROM directory_categories WHERE name = ?", (category["name"],)
                 ).fetchone() == (category["name"],)
@@ -373,7 +374,7 @@ def main() -> None:
                 assert visitor[key] == []
             assert "focus_target" not in restarted["settings"]
             assert not {"links", "papers", "focus_sessions"} & restarted.keys()
-            with sqlite3.connect(Path(data_dir) / "workspace.db") as db:
+            with closing(sqlite3.connect(Path(data_dir) / "workspace.db")) as db, db:
                 for table in ("links", "papers", "focus_sessions"):
                     assert db.execute(f"SELECT title FROM {table}").fetchall() == [("Legacy data",)]
                 assert db.execute("SELECT value FROM settings WHERE key = 'focus_target'").fetchone() == ("legacy-invalid-value",)

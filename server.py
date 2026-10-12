@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Single-user, server-hosted schedule and research dashboard."""
+"""Private workspaces with managed accounts and explicit project sharing."""
 
 from __future__ import annotations
 
@@ -20,10 +20,12 @@ from http.cookies import SimpleCookie
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from contextvars import ContextVar
 from urllib.parse import parse_qs, urlparse
 
 import research
 import schedule
+import accounts
 
 
 ROOT = Path(__file__).resolve().parent
@@ -39,6 +41,8 @@ MAX_BODY_SIZE = 512 * 1024
 
 DB_LOCK = threading.RLock()
 LOGIN_ATTEMPTS: dict[str, list[float]] = {}
+CURRENT_USER = ContextVar("current_user", default=1)
+WORKSPACE_USER = ContextVar("workspace_user", default=None)
 
 TASK_STATUSES = {"todo", "doing", "done"}
 
@@ -51,17 +55,35 @@ def local_now() -> datetime:
     return datetime.now(timezone(timedelta(hours=8))).replace(tzinfo=None)
 
 
-def db_connect() -> sqlite3.Connection:
-    connection = sqlite3.connect(DB_PATH, timeout=10)
+class WorkspaceConnection(sqlite3.Connection):
+    def __exit__(self, *args):
+        try:
+            return super().__exit__(*args)
+        finally:
+            self.close()
+
+
+def workspace_path(user_id):
+    return DB_PATH if user_id == 1 else DATA_DIR / "users" / str(int(user_id)) / "workspace.db"
+
+
+def connect_workspace(user_id):
+    connection = sqlite3.connect(workspace_path(user_id), timeout=10, factory=WorkspaceConnection)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
     connection.execute("PRAGMA journal_mode = WAL")
     return connection
 
 
-def init_database() -> None:
+def db_connect() -> sqlite3.Connection:
+    return connect_workspace(WORKSPACE_USER.get() or CURRENT_USER.get())
+
+
+def init_database(user_id=1) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    with DB_LOCK, db_connect() as db:
+    accounts.initialize(DATA_DIR, ADMIN_PASSWORD)
+    workspace_path(user_id).parent.mkdir(parents=True, exist_ok=True)
+    with DB_LOCK, connect_workspace(user_id) as db:
         db.executescript(
             """
             CREATE TABLE IF NOT EXISTS settings (
@@ -145,6 +167,10 @@ def init_database() -> None:
         existing = db.execute("SELECT COUNT(*) FROM settings").fetchone()[0]
         if existing == 0:
             seed_database(db)
+            if user_id != 1:
+                db.execute("DELETE FROM tasks")
+                db.execute("UPDATE settings SET value='我的工作台' WHERE key='display_name'")
+                db.execute("UPDATE settings SET value='' WHERE key IN ('github','bio')")
         directory_seeded = db.execute(
             "SELECT value FROM settings WHERE key = 'directory_seed_version'"
         ).fetchone()
@@ -518,6 +544,10 @@ def validate_payload(table: str, data: dict[str, Any]) -> dict[str, Any]:
 
 
 def get_bootstrap_data(authenticated: bool) -> dict[str, Any]:
+    if not authenticated:
+        return {"authenticated": False, "public_read": False, "settings": {},
+                "projects": [], "directory_links": [], "directory_categories": [],
+                "tasks": [], "calendar_events": [], "stats": {}}
     with DB_LOCK, db_connect() as db:
         settings = {
             row["key"]: row["value"]
@@ -564,9 +594,33 @@ def get_bootstrap_data(authenticated: bool) -> dict[str, Any]:
                 "history": schedule.history_items(db),
                 "research_items": research.list_items(db),
                 "llm_settings": research.settings(db),
-                "feed_refreshing": research.REFRESH_LOCK.locked(),
+                "feed_refreshing": research.feed_refreshing(db_connect),
             }
 
+    for project in projects:
+        project.update(permission="owner", owner_id=CURRENT_USER.get(), shared=False)
+    for task in tasks:
+        task.update(permission="owner", shared=False)
+    for membership in accounts.shared_projects(DATA_DIR, CURRENT_USER.get()):
+        owner, project_id = membership["owner_id"], membership["project_id"]
+        with connect_workspace(owner) as shared_db:
+            row = shared_db.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
+            if row is None:
+                continue
+            project = dict(row)
+            project["variables"] = json.loads(project["variables"] or "{}")
+            shared_tasks = [dict(item) for item in shared_db.execute(
+                "SELECT * FROM tasks WHERE project_id=? ORDER BY id", (project_id,))]
+        project.update(id=f"shared:{owner}:{project_id}", shared=True, owner_id=owner,
+                       owner_name=membership["owner_name"], permission=membership["permission"],
+                       item_count=len(shared_tasks), completed_count=sum(t["status"] == "done" for t in shared_tasks))
+        project["progress"] = round(project["completed_count"] / len(shared_tasks) * 100) if shared_tasks else 0
+        projects.append(project)
+        for task in shared_tasks:
+            task.update(id=f"shared:{owner}:{project_id}:{task['id']}", project_id=project["id"],
+                        shared=True, permission=membership["permission"], start_at="", end_at="",
+                        successor_id=None, repeat_template="")
+            tasks.append(task)
     stats = {
         "open_tasks": sum(task["status"] != "done" for task in tasks),
         "open_projects": sum(project["status"] in {"idea", "active", "paused"} for project in projects),
@@ -587,6 +641,7 @@ def get_bootstrap_data(authenticated: bool) -> dict[str, Any]:
 
 
 class DashboardHandler(SimpleHTTPRequestHandler):
+    dummy_password_hash = accounts.password_hash(secrets.token_urlsafe(24))
     server_version = "ResearchDesk/1.0"
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -614,7 +669,26 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             authenticated, csrf = self.auth_context()
             payload = get_bootstrap_data(authenticated)
             payload["csrf_token"] = csrf if authenticated else ""
+            payload["user"] = accounts.public_user(self.user) if authenticated else None
             self.send_json(payload)
+            return
+        if path == "/api/accounts" or re.fullmatch(r"/api/projects/\d+/members", path):
+            authenticated, _ = self.auth_context()
+            if not authenticated:
+                self.send_error_json(HTTPStatus.UNAUTHORIZED, "请先登录")
+            elif path == "/api/accounts":
+                if self.user["is_admin"]:
+                    self.send_json(accounts.list_users(DATA_DIR))
+                else:
+                    self.send_error_json(HTTPStatus.FORBIDDEN, "仅管理员可管理账户")
+            else:
+                project_id = int(path.split("/")[3])
+                with db_connect() as db:
+                    exists = db.execute("SELECT 1 FROM projects WHERE id=?", (project_id,)).fetchone()
+                if not exists:
+                    self.send_error_json(HTTPStatus.NOT_FOUND, "项目不存在")
+                else:
+                    self.send_json(accounts.members(DATA_DIR, self.user["id"], project_id))
             return
         if path == "/api/calendar":
             authenticated, _ = self.auth_context()
@@ -650,6 +724,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+            self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -677,7 +752,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         if not self.require_write_auth(authenticated, csrf):
             return
 
+        if self.account_action(path, data) or self.shared_action(path, data, "POST"):
+            return
+
         if path == "/api/logout":
+            accounts.revoke(DATA_DIR, self.session_id)
             self.send_json(
                 {"ok": True},
                 cookie="research_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0",
@@ -711,6 +790,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         authenticated, csrf = self.auth_context()
         if not self.require_write_auth(authenticated, csrf):
             return
+        if self.shared_action(path, data, "PUT"):
+            return
         match = re.fullmatch(r"/api/(directory-links|projects|tasks|calendar-events|inbox|research-items)/(\d+)", path)
         if not match:
             self.send_error_json(HTTPStatus.NOT_FOUND, "接口不存在")
@@ -722,6 +803,14 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         authenticated, csrf = self.auth_context()
         if not self.require_write_auth(authenticated, csrf):
             return
+        if path.startswith("/api/shared/"):
+            try:
+                data = self.read_json()
+            except ValueError as error:
+                self.feature_error(error)
+                return
+            self.shared_action(path, data, "DELETE")
+            return
         match = re.fullmatch(r"/api/(directory-links|projects|tasks|calendar-events|inbox|research-items)/(\d+)", path)
         if not match:
             self.send_error_json(HTTPStatus.NOT_FOUND, "接口不存在")
@@ -729,6 +818,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         table, record_id = match.group(1).replace("-", "_"), int(match.group(2))
         try:
             data = self.read_json()
+        except ValueError as error:
+            self.feature_error(error)
+            return
+        self.delete_record(table, record_id, data)
+
+    def delete_record(self, table, record_id, data):
+        try:
             with DB_LOCK, db_connect() as db:
                 before = schedule.snapshot(db, table, record_id)
                 if before is None:
@@ -744,7 +840,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 if table == "tasks":
                     for event in db.execute("SELECT id FROM calendar_events WHERE task_id=?", (record_id,)).fetchall():
                         old = schedule.snapshot(db, "calendar_events", event["id"])
-                        db.execute("DELETE FROM calendar_events WHERE id=?", (event["id"],))
+                        if getattr(self, "shared_response", False):
+                            db.execute("UPDATE calendar_events SET task_id=NULL, updated_at=? WHERE id=?", (utc_now(), event["id"]))
+                        else:
+                            db.execute("DELETE FROM calendar_events WHERE id=?", (event["id"],))
                         changes.append(schedule.change(db, "calendar_events", old, event["id"]))
                 db.execute(f"DELETE FROM {table} WHERE id=?", (record_id,))
                 changes.insert(0, schedule.change(db, table, before, record_id))
@@ -758,6 +857,90 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         message = "记录存在关联或已经改变，请刷新后重试" if isinstance(error, sqlite3.IntegrityError) else str(error)
         self.send_error_json(status, message)
 
+    def account_action(self, path, data):
+        member = re.fullmatch(r"/api/projects/(\d+)/members", path)
+        account = re.fullmatch(r"/api/accounts/(\d+)", path)
+        if not (member or account or path in {"/api/accounts", "/api/password"}):
+            return False
+        try:
+            if member:
+                project_id = int(member.group(1))
+                with DB_LOCK, db_connect() as db:
+                    if not db.execute("SELECT 1 FROM projects WHERE id=?", (project_id,)).fetchone():
+                        raise ValueError("项目不存在")
+                    accounts.set_member(DATA_DIR, self.user["id"], project_id, data)
+                self.send_json(accounts.members(DATA_DIR, self.user["id"], project_id))
+            elif path == "/api/password":
+                if not accounts.verify(data.get("current_password"), self.user["password_hash"]):
+                    self.send_error_json(HTTPStatus.FORBIDDEN, "当前密码不正确")
+                else:
+                    accounts.update_user(DATA_DIR, self.user["id"], {"password": data.get("password")})
+                    self.send_json({"ok": True}, cookie="research_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0")
+            elif not self.user["is_admin"]:
+                self.send_error_json(HTTPStatus.FORBIDDEN, "仅管理员可管理账户")
+            elif account:
+                self.send_json(accounts.update_user(DATA_DIR, int(account.group(1)), data))
+            else:
+                with DB_LOCK:
+                    user = accounts.create_user(DATA_DIR, data)
+                    init_database(user["id"])
+                self.send_json(user, HTTPStatus.CREATED)
+        except (ValueError, TypeError, sqlite3.IntegrityError) as error:
+            self.feature_error(error)
+        return True
+
+    def shared_action(self, path, data, method):
+        if not path.startswith("/api/shared/"):
+            return False
+        match = re.fullmatch(r"/api/shared/(\d+)/(\d+)/(projects|tasks)(?:/(\d+))?", path)
+        if not match:
+            self.send_error_json(HTTPStatus.NOT_FOUND, "接口不存在")
+            return True
+        owner, project_id, table, record_id = match.groups()
+        owner, project_id = int(owner), int(project_id)
+        record_id = int(record_id) if record_id else None
+        with DB_LOCK:
+            permission = accounts.membership(DATA_DIR, owner, project_id, self.user["id"])
+            if permission != "edit":
+                self.send_error_json(HTTPStatus.FORBIDDEN, "没有此共享项目的编辑权限")
+                return True
+            with connect_workspace(owner) as db:
+                project = db.execute("SELECT 1 FROM projects WHERE id=?", (project_id,)).fetchone()
+                before = db.execute(f"SELECT * FROM {table} WHERE id=?", (record_id,)).fetchone() if record_id else None
+            if not project or (record_id and (not before or
+                    (table == "tasks" and before["project_id"] != project_id) or
+                    (table == "projects" and record_id != project_id))):
+                self.send_error_json(HTTPStatus.NOT_FOUND, "共享记录不存在")
+                return True
+            if table == "projects" and method != "PUT":
+                self.send_error_json(HTTPStatus.FORBIDDEN, "仅项目所有者可创建或删除项目")
+                return True
+            if data.get("_inbox_id"):
+                self.send_error_json(HTTPStatus.BAD_REQUEST, "请先创建共享推进项，再单独处理个人收集内容")
+                return True
+            if table == "tasks":
+                if str(data.get("project_id", project_id)) != str(project_id):
+                    self.send_error_json(HTTPStatus.FORBIDDEN, "共享推进项不能移出当前项目")
+                    return True
+                data = {**data, "project_id": project_id,
+                        "start_at": before["start_at"] if before else "",
+                        "end_at": before["end_at"] if before else ""}
+            token = WORKSPACE_USER.set(owner)
+            self.shared_response = True
+            try:
+                if method == "POST" and record_id is None and table == "tasks":
+                    self.create_record(table, data)
+                elif method == "PUT" and record_id:
+                    self.update_record(table, record_id, data)
+                elif method == "DELETE" and record_id and table == "tasks":
+                    self.delete_record(table, record_id, data)
+                else:
+                    self.send_error_json(HTTPStatus.NOT_FOUND, "接口不存在")
+            finally:
+                self.shared_response = False
+                WORKSPACE_USER.reset(token)
+        return True
+
     def feature_action(self, path, data) -> bool:
         undo = re.fullmatch(r"/api/history/(\d+)/undo", path)
         occurrence = re.fullmatch(r"/api/calendar-events/(\d+)/occurrence", path)
@@ -767,7 +950,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return False
         try:
             if path == "/api/research/refresh":
-                threading.Thread(target=research.refresh_feed, args=(db_connect, True), daemon=True).start()
+                user_id = self.user["id"]
+                threading.Thread(target=research.refresh_feed, args=(lambda: connect_workspace(user_id), True), daemon=True).start()
                 self.send_json({"ok": True, "refreshing": True}, HTTPStatus.ACCEPTED)
                 return True
             if path == "/api/research/inspect":
@@ -803,21 +987,26 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         return True
 
     def handle_login(self, data: dict[str, Any]) -> None:
-        client = self.client_address[0]
+        name = str(data.get("username", "admin")).strip().lower()
+        client = self.client_address[0] + ":" + name[:40]
         now = time.time()
         attempts = [stamp for stamp in LOGIN_ATTEMPTS.get(client, []) if now - stamp < 300]
         LOGIN_ATTEMPTS[client] = attempts
         if len(attempts) >= 8:
             self.send_error_json(HTTPStatus.TOO_MANY_REQUESTS, "尝试次数过多，请 5 分钟后再试")
             return
-        supplied = str(data.get("password", ""))
-        if not hmac.compare_digest(supplied, ADMIN_PASSWORD):
+        user = accounts.find_user(DATA_DIR, name)
+        supplied = data.get("password", "")
+        valid = accounts.verify(supplied, user["password_hash"] if user else self.dummy_password_hash)
+        if not user or not user["enabled"] or not valid:
             attempts.append(now)
-            self.send_error_json(HTTPStatus.UNAUTHORIZED, "密码不正确")
+            self.send_error_json(HTTPStatus.UNAUTHORIZED, "用户名或密码不正确")
             return
         LOGIN_ATTEMPTS.pop(client, None)
         csrf = secrets.token_urlsafe(24)
-        token = encode_token({"exp": int(now) + SESSION_TTL, "csrf": csrf})
+        expires = int(now) + SESSION_TTL
+        sid = accounts.new_session(DATA_DIR, user["id"], expires)
+        token = encode_token({"exp": expires, "csrf": csrf, "uid": user["id"], "sid": sid})
         cookie = f"research_session={token}; Path=/; HttpOnly; SameSite=Strict"
         if data.get("remember", True):
             cookie += f"; Max-Age={SESSION_TTL}"
@@ -826,6 +1015,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         self.send_json({"ok": True, "csrf_token": csrf}, cookie=cookie)
 
     def auth_context(self) -> tuple[bool, str]:
+        CURRENT_USER.set(1)
+        WORKSPACE_USER.set(None)
+        self.user = None
+        self.session_id = ""
         try:
             cookie = SimpleCookie(self.headers.get("Cookie", ""))
         except Exception:
@@ -836,6 +1029,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         payload = decode_token(morsel.value)
         if not payload:
             return False, ""
+        user = accounts.session_user(DATA_DIR, payload)
+        if not user:
+            return False, ""
+        self.user = user
+        self.session_id = payload["sid"]
+        CURRENT_USER.set(user["id"])
         return True, str(payload.get("csrf", ""))
 
     def require_write_auth(self, authenticated: bool, csrf: str) -> bool:
@@ -980,6 +1179,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         status: HTTPStatus = HTTPStatus.OK,
         cookie: str | None = None,
     ) -> None:
+        if getattr(self, "shared_response", False) and isinstance(data, dict):
+            data = {key: value for key, value in data.items() if key not in
+                    {"_history_id", "history_id", "start_at", "end_at", "successor_id", "repeat_template"}}
         body = json.dumps(data, ensure_ascii=False).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -994,8 +1196,30 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         self.send_json({"error": message}, status=status)
 
 
+def account_feed_worker(stop):
+    while not stop.wait(30):
+        for user in accounts.list_users(DATA_DIR):
+            if stop.is_set():
+                return
+            if not user["enabled"]:
+                continue
+            try:
+                user_id = user["id"]
+                with connect_workspace(user_id) as db:
+                    enabled = research.settings(db)["research_auto"] == "true"
+                if enabled:
+                    research.refresh_feed(lambda uid=user_id: connect_workspace(uid))
+            except Exception:
+                pass
+        if stop.wait(1800):
+            return
+
+
 def main() -> None:
     init_database()
+    for user in accounts.list_users(DATA_DIR):
+        if user["id"] != 1:
+            init_database(user["id"])
     if ADMIN_PASSWORD == "change-me":
         print("WARNING: using development password 'change-me'. Set ADMIN_PASSWORD before deployment.")
     if "APP_SECRET" not in os.environ:
@@ -1003,7 +1227,7 @@ def main() -> None:
     server = ThreadingHTTPServer((HOST, PORT), DashboardHandler)
     stop = threading.Event()
     if os.environ.get("RESEARCH_AUTO_FETCH", "true").lower() == "true":
-        threading.Thread(target=research.feed_worker, args=(db_connect, stop), daemon=True).start()
+        threading.Thread(target=account_feed_worker, args=(stop,), daemon=True).start()
     print(f"Research Desk running at http://{HOST}:{PORT}")
     try:
         server.serve_forever()

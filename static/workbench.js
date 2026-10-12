@@ -29,7 +29,7 @@ function syncRepeatFields() {
 
 function taskEditorFields(record) {
   return `<label class="field"><span>推进项名称 *</span><input name="title" maxlength="160" required value="${escapeHtml(record.title)}"></label>
-    <div class="field-row"><label class="field"><span>所属项目</span><select name="project_id"><option value="">未归类</option>${state.projects.map((project) => `<option value="${project.id}" ${Number(record.project_id) === project.id ? "selected" : ""}>${escapeHtml(project.title)}</option>`).join("")}</select></label><label class="field"><span>截止日期</span><input name="due_date" type="date" value="${escapeHtml(record.due_date)}"></label></div>
+    <div class="field-row"><label class="field"><span>所属项目</span><select name="project_id">${record.shared ? "" : '<option value="">未归类</option>'}${state.projects.filter((project) => (record.shared ? project.id === record.project_id : project.permission !== "view" && ((!record.id && !record._inbox_id) || !project.shared))).map((project) => `<option value="${project.id}" ${recordId(record.project_id) === project.id ? "selected" : ""}>${escapeHtml(project.title)}</option>`).join("")}</select></label><label class="field"><span>截止日期</span><input name="due_date" type="date" value="${escapeHtml(record.due_date)}"></label></div>
     <label class="field"><span>精确截止时间（可选）</span><input name="deadline_at" type="datetime-local" value="${escapeHtml(record.deadline_at)}"></label>
     <div class="field-row"><label class="field"><span>优先级</span><select name="priority">${Object.entries(labels.priority).map(([key, value]) => `<option value="${key}" ${(record.priority || "medium") === key ? "selected" : ""}>${value}</option>`).join("")}</select></label><label class="field"><span>状态</span><select name="status">${Object.entries(labels.taskStatus).map(([key, value]) => `<option value="${key}" ${(record.status || "todo") === key ? "selected" : ""}>${value}</option>`).join("")}</select></label></div>
     ${repeatEditorFields(record)}
@@ -91,9 +91,13 @@ function renderInteractiveCalendar() {
       },
       datesSet: (info) => { $("#calendar-range-title").textContent = info.view.title; },
       events: async (info, success, failure) => {
+        if (!state.authenticated) { success([]); return; }
+        const accountId = state.user?.id;
         try {
           const params = new URLSearchParams({ start: localDateTimeValue(info.start), end: localDateTimeValue(info.end) });
-          calendarData = await api(`/api/calendar?${params}`);
+          const items = await api(`/api/calendar?${params}`);
+          if (accountId !== state.user?.id || !state.authenticated) { success([]); return; }
+          calendarData = items;
           const category = $("#calendar-category").value;
           const hideDone = $("#calendar-hide-done").checked;
           success(calendarData.filter((item) => (!category || item.event.calendar_name === category) && (!hideDone || !item.event.task_done)).map(eventToCalendar));
@@ -194,6 +198,7 @@ function renderReminders() {
 }
 
 function renderSettings(force = false) {
+  if (typeof renderAccount === "function") renderAccount();
   const form = $("#llm-form");
   if (!form) return;
   if (force || !settingsLoaded) {
@@ -256,8 +261,8 @@ async function mutate(path, method, body, message) {
 }
 
 function planTask(id) {
-  const task = state.tasks.find((item) => item.id === Number(id));
-  openEditor("calendarEvents", null, task ? { title: task.title, task_id: task.id, calendar_name: task.course || "任务" } : {});
+  const task = state.tasks.find((item) => item.id === recordId(id));
+  openEditor("calendarEvents", null, task ? { title: task.title, task_id: task.shared ? null : task.id, calendar_name: task.course || "任务" } : {});
 }
 
 function bindWorkbench() {
@@ -366,14 +371,14 @@ function bindWorkbench() {
       if (button.dataset.planTask || button.dataset.action === "plan-task") planTask(button.dataset.planTask);
       if (button.dataset.convertInbox) {
         const item = state.inbox.find((item) => item.id === Number(button.dataset.convertInbox));
-        openEditor(button.dataset.kind, null, { title: item.title.slice(0, 160), notes: item.title, description: item.title, project_id: button.dataset.kind === "tasks" ? state.selectedProjectId : undefined, _inbox_id: item.id, _inbox_version: item.updated_at });
+        openEditor(button.dataset.kind, null, { title: item.title.slice(0, 160), notes: item.title, description: item.title, project_id: button.dataset.kind === "tasks" && !String(state.selectedProjectId).startsWith("shared:") ? state.selectedProjectId : undefined, _inbox_id: item.id, _inbox_version: item.updated_at });
       }
       if (button.dataset.deleteInbox) {
         const item = state.inbox.find((item) => item.id === Number(button.dataset.deleteInbox));
         await mutate(`/api/inbox/${item.id}`, "DELETE", { _version: item.updated_at }, "已移入回收站");
       }
       if (button.dataset.skipTask) {
-        const task = state.tasks.find((item) => item.id === Number(button.dataset.skipTask));
+        const task = state.tasks.find((item) => item.id === recordId(button.dataset.skipTask));
         await mutate(`/api/tasks/${task.id}`, "PUT", { ...task, _version: task.updated_at, _skip: true, status: "done" }, "已跳过本次");
       }
       if (button.dataset.undo) {

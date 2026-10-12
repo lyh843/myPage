@@ -13,7 +13,7 @@ RUN addgroup -S research && adduser -S research -G research \
     && mkdir -p /app/data && chown -R research:research /app
 
 COPY --chown=research:research server.py /app/server.py
-COPY --chown=research:research schedule.py research.py /app/
+COPY --chown=research:research schedule.py research.py accounts.py /app/
 COPY --chown=research:research static /app/static
 
 USER research

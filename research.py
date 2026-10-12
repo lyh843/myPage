@@ -17,14 +17,25 @@ import urllib3
 from cryptography.fernet import Fernet, InvalidToken
 
 
-REFRESH_LOCK = threading.Lock()
-SUMMARY_LOCK = threading.Lock()
+WORKSPACE_LOCKS = {}
+LOCK_REGISTRY_LOCK = threading.Lock()
 MAX_FETCH_BYTES = 2 * 1024 * 1024
 MAX_TEXT = 40000
 DEFAULTS = {
     "llm_endpoint": "", "llm_model": "", "llm_enabled": "false",
     "llm_daily_limit": "20", "research_auto": "true",
 }
+
+
+def workspace_lock(connect, kind):
+    with connect() as db:
+        path = db.execute("PRAGMA database_list").fetchone()[2]
+    with LOCK_REGISTRY_LOCK:
+        return WORKSPACE_LOCKS.setdefault((path, kind), threading.Lock())
+
+
+def feed_refreshing(connect):
+    return workspace_lock(connect, "refresh").locked()
 
 
 def init_schema(db):
@@ -201,7 +212,8 @@ def normalize_paper(entry, source_date):
 
 
 def refresh_feed(connect, force=False):
-    if not REFRESH_LOCK.acquire(blocking=False):
+    lock = workspace_lock(connect, "refresh")
+    if not lock.acquire(blocking=False):
         return
     try:
         with connect() as db:
@@ -250,7 +262,7 @@ def refresh_feed(connect, force=False):
             db.executemany("""INSERT INTO settings VALUES (?, ?)
                 ON CONFLICT(key) DO UPDATE SET value=excluded.value""", values.items())
     finally:
-        REFRESH_LOCK.release()
+        lock.release()
 
 
 def feed_worker(connect, stop):
@@ -303,7 +315,8 @@ def save_link(db, item):
 def summarize(connect, item_id, consent):
     if consent is not True:
         raise ValueError("请先确认将所选内容发送至配置的 LLM 服务")
-    if not SUMMARY_LOCK.acquire(blocking=False):
+    lock = workspace_lock(connect, "summary")
+    if not lock.acquire(blocking=False):
         raise ValueError("已有摘要请求处理中，请稍后再试")
     try:
         with connect() as db:
@@ -358,4 +371,4 @@ def summarize(connect, item_id, consent):
                 raise ValueError("这条记录已在其他设备删除，摘要未保存")
         return {"summary": text, "summary_model": config["llm_model"], "summarized_at": now}
     finally:
-        SUMMARY_LOCK.release()
+        lock.release()

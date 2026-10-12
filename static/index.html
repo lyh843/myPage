@@ -10,6 +10,7 @@
     <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js" defer></script>
     <script src="/vendor/fullcalendar-6.1.19.min.js" defer></script>
     <script src="/workbench.js" defer></script>
+    <script src="/accounts.js" defer></script>
     <script src="/app.js" defer></script>
   </head>
   <body class="is-locked">
@@ -41,9 +42,9 @@
         </nav>
 
         <div class="sidebar-foot">
-          <a class="profile-chip" id="profile-link" href="https://github.com/lyh843" target="_blank" rel="noreferrer">
-            <img src="https://github.com/lyh843.png?size=96" alt="LYH 的 GitHub 头像">
-            <span><strong id="sidebar-name">LYH</strong><small id="sidebar-role">个人日程</small></span>
+          <a class="profile-chip" id="profile-link" href="#settings" rel="noreferrer">
+            <img src="/avatar.svg" alt="工作台头像">
+            <span><strong id="sidebar-name">Research Desk</strong><small id="sidebar-role">个人日程</small></span>
             <i data-lucide="arrow-up-right"></i>
           </a>
           <button class="sidebar-action auth-only" id="settings-button" type="button">
@@ -240,6 +241,8 @@
           <section class="view" data-view="settings" aria-labelledby="settings-title">
             <div class="page-heading"><h1 id="settings-title">设置与恢复</h1><button class="secondary-button" id="settings-logout" type="button"><i data-lucide="log-out"></i>退出登录</button></div>
             <section class="settings-section"><div class="section-heading compact"><h2>个人资料</h2><button class="text-button" id="edit-profile" type="button"><i data-lucide="pencil"></i>编辑</button></div><p id="settings-profile" class="muted"></p></section>
+            <section class="settings-section"><h2>账户与密码</h2><p id="account-identity" class="muted"></p><form id="password-form" class="settings-form"><div class="field-row"><label class="field"><span>当前密码</span><input name="current_password" type="password" autocomplete="current-password" required></label><label class="field"><span>新密码（至少 10 位）</span><input name="password" type="password" minlength="10" maxlength="256" autocomplete="new-password" required></label></div><button class="secondary-button" type="submit">修改密码并退出所有设备</button></form></section>
+            <section class="settings-section" id="account-admin" hidden><h2>账户管理</h2><p class="muted">新账户拥有独立工作台。管理员只管理账户，项目需由所有者主动共享。</p><form id="create-account-form" class="settings-form"><div class="field-row"><label class="field"><span>用户名</span><input name="username" pattern="[a-zA-Z0-9][a-zA-Z0-9_-]{2,39}" minlength="3" maxlength="40" autocomplete="off" required></label><label class="field"><span>初始密码</span><input name="password" type="password" minlength="10" maxlength="256" autocomplete="new-password" required></label></div><button class="primary-button" type="submit">创建账户</button></form><button class="text-button" id="refresh-accounts" type="button">刷新账户列表</button><div id="account-list"></div></section>
             <section class="settings-section"><div class="section-heading compact"><h2>LLM 服务</h2><span id="llm-key-status" class="muted"></span></div>
               <form id="llm-form" class="settings-form">
                 <label class="check-field"><input type="checkbox" name="llm_enabled"><span>启用摘要</span></label>
@@ -276,6 +279,7 @@
       <form id="login-form" method="dialog">
         <div class="modal-head"><div><span class="section-code">RESEARCH DESK</span><h2 id="login-title">登录工作台</h2></div></div>
         <div class="form-body">
+          <label class="field"><span>用户名</span><input id="login-username" name="username" autocomplete="username" value="admin" maxlength="40" required></label>
           <label class="field"><span>密码</span><span class="input-wrap"><i data-lucide="key-round"></i><input id="login-password" name="password" type="password" autocomplete="current-password" required autofocus placeholder="输入密码"></span></label>
           <label class="check-field"><input id="remember-browser" type="checkbox" checked><span>记住此浏览器 14 天</span></label>
           <p class="form-error" id="login-error" role="alert"></p>
@@ -283,6 +287,7 @@
         <div class="form-actions"><span></span><span></span><span></span><button class="primary-button" type="submit">登录</button></div>
       </form>
     </dialog>
+    <dialog class="modal compact-modal" id="members-modal"><div class="modal-head"><h2>共享项目</h2><button class="icon-button" type="button" data-close-modal aria-label="关闭"><i data-lucide="x"></i></button></div><div class="form-body"><p class="muted">共享此项目和推进项；个人日历、收集箱、API Key 与工作台设置保持私有。项目恢复后原有成员授权仍有效。</p><div id="member-list"></div><form id="member-form" class="settings-form"><label class="field"><span>成员用户名</span><input name="username" required maxlength="40" autocomplete="off"></label><label class="field"><span>权限</span><select name="permission"><option value="view">查看</option><option value="edit">编辑项目与推进项</option><option value="remove">移除成员</option></select></label><button class="primary-button" type="submit">保存成员权限</button></form></div></dialog>
     <dialog class="modal" id="reminders-modal" aria-labelledby="reminders-title"><div class="modal-head"><h2 id="reminders-title">站内提醒</h2><button class="icon-button" type="button" data-close-modal aria-label="关闭"><i data-lucide="x"></i></button></div><div class="form-body" id="reminders-list"></div></dialog>
 
     <dialog class="command-modal" id="command-modal" aria-label="全局搜索">
